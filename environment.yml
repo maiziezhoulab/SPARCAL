@@ -1,0 +1,22 @@
+name: snv_caller
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - pysam
+  - samtools>=1.18
+  - pip
+  - ipython
+  - jupyter
+  - tqdm
+  - matplotlib
+  - seaborn
+  - biopython
+  - pyvcf
+  - bedtools
+  pip:
+    - memory_profiler

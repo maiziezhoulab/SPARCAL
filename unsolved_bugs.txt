@@ -1,0 +1,2 @@
+Error processing BAM file: 'N'
+Error processing /data/maiziezhou_lab/Datasets/ST_datasets/DLPFC_spatialLIBD/151507/bam_bycell/TCTGACTGTAATGGTT-1.bam for chromosome 6: 'N'

@@ -1,0 +1,9 @@
+Overall SNV Caller Comparison Summary
+===================================
+
+
+BAM: AAACAACGAATAGTTC-1
+-----------------------
+Total SNVs: 1606
+Common SNVs: 0
+Unique SNVs per caller: Mpileup: 88, Old Caller: 0, MPileupMulti: 0
