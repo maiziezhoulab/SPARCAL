@@ -1,0 +1,123 @@
+# =============================================================================
+# SPARCAL Pipeline Configuration — DLPFC (Germline / Normal Tissue)
+# =============================================================================
+# This is a normal (non-cancerous) spatial transcriptomics dataset from the
+# human dorsolateral prefrontal cortex (DLPFC) spatialLIBD project.
+# Reference genome: 10x GRCh38-3.0.0 (no "chr" prefix in BAM contigs).
+
+tissue_type: germline
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+sections:
+  ids:
+    - "151507"
+    - "151508"
+    - "151509"
+    - "151510"
+    - "151669"
+    - "151670"
+    - "151671"
+    - "151672"
+    - "151673"
+    - "151674"
+    - "151675"
+    - "151676"
+
+# ---------------------------------------------------------------------------
+# Reference genome
+# ---------------------------------------------------------------------------
+reference:
+  fasta: /data/maiziezhou_lab/Softwares/GRCh38-3.0.0/fasta/genome.fa
+  chr_prefix: ""            # BAM contigs are "1", "2", … (no "chr")
+  build: GRCh38
+
+# ---------------------------------------------------------------------------
+# Paths (project-wide)
+# ---------------------------------------------------------------------------
+paths:
+  project_dir: /data/maiziezhou_lab/leiy4/SPARCAL
+  apps_dir: /data/maiziezhou_lab/leiy4/SPARCAL/apps
+
+# ---------------------------------------------------------------------------
+# CLI tools (relative to apps_dir unless absolute)
+# ---------------------------------------------------------------------------
+tools:
+  samtools: samtools
+  bcftools: bcftools
+  bgzip: bgzip
+  tabix: tabix
+
+# ---------------------------------------------------------------------------
+# Input BAMs
+# ---------------------------------------------------------------------------
+input:
+  bam_base_path: /data/maiziezhou_lab/Datasets/ST_datasets/DLPFC_spatialLIBD
+  bam_pattern: "{section_id}/bam_bycell/*.bam"
+  multiple_bams: true
+
+# ---------------------------------------------------------------------------
+# Output directory pattern (relative to project_dir)
+# ---------------------------------------------------------------------------
+output:
+  dir_pattern: "data/dlpfc/{section_id}"
+
+# ---------------------------------------------------------------------------
+# Spatial data
+# ---------------------------------------------------------------------------
+spatial:
+  # For DLPFC the spatial files sit inside the main dataset dir
+  dir: /data/maiziezhou_lab/Datasets/ST_datasets/DLPFC12/{section_id}/spatial
+  position_file: tissue_positions_list.csv
+  scale_factor_file: scalefactors_json.json
+  image_file: tissue_hires_image.png
+  has_header: false
+  in_tissue_column: 1          # 0-based index of the in_tissue flag
+
+# ---------------------------------------------------------------------------
+# 1000 Genomes (GRCh38)
+# ---------------------------------------------------------------------------
+thousand_genomes:
+  base_path: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/1000Genome_GRCh38
+  pattern: "CCDG_14151_B01_GRM_WGS_2020-08-05_{chrom}.filtered.shapeit2-duohmm-phased.vcf.gz"
+
+# ---------------------------------------------------------------------------
+# Beagle genotype phasing
+# ---------------------------------------------------------------------------
+beagle:
+  jar: beagle.27Jul16.86a.jar
+  java: src/jdk-11.0.2/bin/java
+  threads: 24
+  memory: "10g"
+  model_scale: 2
+  iterations: 0
+  impute: false
+  gprobs: true
+
+# ---------------------------------------------------------------------------
+# Quality filter (applied at mpileup stage)
+# ---------------------------------------------------------------------------
+quality_filter:
+  base_quality: 0
+  mapping_quality: 0
+
+# ---------------------------------------------------------------------------
+# Classifier (germline-only)
+# ---------------------------------------------------------------------------
+classifier:
+  model_type: neural_network
+  max_training_samples: 90000
+
+# ---------------------------------------------------------------------------
+# SLURM
+# ---------------------------------------------------------------------------
+slurm:
+  account: maiziezhou_lab_phd_int
+  partition: interactive
+  qos: maiziezhou_lab_phd_int
+  conda_env: snv_caller
+  cpus_per_task: 30
+  mem: 128GB
+  time: "24:00:00"
+  mail_user: yuqi.lei@vanderbilt.edu

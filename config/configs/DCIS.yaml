@@ -1,0 +1,114 @@
+# =============================================================================
+# SPARCAL Pipeline Configuration — DCIS (Somatic / Ductal Carcinoma In Situ)
+# =============================================================================
+# Ductal carcinoma in situ, 10x Visium, two sections (DCIS1, DCIS2).
+# Reference genome: 10x GRCh38-3.0.0 (same as DLPFC — no "chr" prefix).
+
+tissue_type: somatic
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+sections:
+  ids:
+    - "1"
+    - "2"
+
+# ---------------------------------------------------------------------------
+# Reference genome
+# ---------------------------------------------------------------------------
+reference:
+  fasta: /data/maiziezhou_lab/Softwares/GRCh38-3.0.0/fasta/genome.fa
+  chr_prefix: ""              # BAM contigs have no "chr" prefix
+  build: GRCh38
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  project_dir: /data/maiziezhou_lab/leiy4/SPARCAL
+  apps_dir: /data/maiziezhou_lab/leiy4/SPARCAL/apps
+
+# ---------------------------------------------------------------------------
+# CLI tools
+# ---------------------------------------------------------------------------
+tools:
+  samtools: samtools
+  bcftools: bcftools
+  bgzip: bgzip
+  tabix: tabix
+
+# ---------------------------------------------------------------------------
+# Input BAMs
+# ---------------------------------------------------------------------------
+input:
+  bam_base_path: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/spatialSNV/10x-Visium
+  bam_pattern: "DCIS{section_id}/spaceranger_align_DCIS{section_id}_hg38/DCIS{section_id}_output/outs/split_BAM/*.bam"
+  multiple_bams: true
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  dir_pattern: "data/dcis/{section_id}"
+
+# ---------------------------------------------------------------------------
+# Spatial data
+# ---------------------------------------------------------------------------
+spatial:
+  dir: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/spatialSNV/10x-Visium/DCIS{section_id}/spaceranger_align_DCIS{section_id}_hg38/DCIS{section_id}_output/outs/spatial
+  position_file: tissue_positions.csv
+  scale_factor_file: scalefactors_json.json
+  image_file: tissue_hires_image.png
+  has_header: true             # DCIS tissue_positions.csv has a header row
+  in_tissue_column: 1
+
+# ---------------------------------------------------------------------------
+# 1000 Genomes (GRCh38)
+# ---------------------------------------------------------------------------
+thousand_genomes:
+  base_path: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/1000Genome_GRCh38
+  pattern: "CCDG_14151_B01_GRM_WGS_2020-08-05_{chrom}.filtered.shapeit2-duohmm-phased.vcf.gz"
+
+# ---------------------------------------------------------------------------
+# Beagle
+# ---------------------------------------------------------------------------
+beagle:
+  jar: beagle.27Jul16.86a.jar
+  java: src/jdk-11.0.2/bin/java
+  threads: 24
+  memory: "10g"
+  model_scale: 2
+  iterations: 0
+  impute: false
+  gprobs: true
+
+# ---------------------------------------------------------------------------
+# Quality filter
+# ---------------------------------------------------------------------------
+quality_filter:
+  base_quality: 0
+  mapping_quality: 0
+
+# ---------------------------------------------------------------------------
+# CalicoST
+# ---------------------------------------------------------------------------
+calicost:
+  base_dir: /data/maiziezhou_lab/leiy4/CalicoST
+  num_clones: 3
+  section_folder_map:
+    "1": DCIS1
+    "2": DCIS2
+
+# ---------------------------------------------------------------------------
+# SLURM
+# ---------------------------------------------------------------------------
+slurm:
+  account: maiziezhou_lab_phd_int
+  partition: interactive
+  qos: maiziezhou_lab_phd_int
+  conda_env: snv_caller
+  cpus_per_task: 30
+  mem: 128GB
+  time: "24:00:00"
+  mail_user: yuqi.lei@vanderbilt.edu

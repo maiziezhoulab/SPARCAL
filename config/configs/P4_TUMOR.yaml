@@ -1,0 +1,127 @@
+# =============================================================================
+# SPARCAL Pipeline Configuration — P4_TUMOR (Somatic / cSCC)
+# =============================================================================
+# Cutaneous squamous cell carcinoma (cSCC) patient 4, Visium spatial
+# transcriptomics. Two replicates (rep1, rep2). Reference genome: hg19.
+
+tissue_type: somatic
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+sections:
+  ids:
+    - "1"
+    - "2"
+
+# ---------------------------------------------------------------------------
+# Reference genome
+# ---------------------------------------------------------------------------
+reference:
+  fasta: /data/maiziezhou_lab/Softwares/refdata-hg19-2.1.0/fasta/genome.fa
+  chr_prefix: "chr"
+  build: hg19
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  project_dir: /data/maiziezhou_lab/leiy4/SPARCAL
+  apps_dir: /data/maiziezhou_lab/leiy4/SPARCAL/apps
+
+# ---------------------------------------------------------------------------
+# CLI tools
+# ---------------------------------------------------------------------------
+tools:
+  samtools: samtools
+  bcftools: bcftools
+  bgzip: bgzip
+  tabix: tabix
+
+# ---------------------------------------------------------------------------
+# Input BAMs
+# ---------------------------------------------------------------------------
+input:
+  bam_base_path: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium
+  bam_pattern: "spaceranger_align_rep{section_id}_hg19/P4_Tumor_output/outs/split_BAM/*.bam"
+  barcode_file_pattern: "spaceranger_align_rep{section_id}/Meta_Data/GSM4565823_barcodes.tsv.gz"
+  multiple_bams: true
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  dir_pattern: "data/P4_tumor/{section_id}"
+
+# ---------------------------------------------------------------------------
+# Spatial data
+# ---------------------------------------------------------------------------
+spatial:
+  dir: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium/spaceranger_align_rep{section_id}_hg19/Meta_Data
+  position_file: ""            # overridden per section below
+  scale_factor_file: ""
+  image_file: ""
+  has_header: false
+  in_tissue_column: 1
+  missing_tissue_file: "spaceranger_align_rep{section_id}/Meta_Data/missing_barcodes.txt"
+
+  section_overrides:
+    "1":
+      position_file: GSM4565823_P4_rep1_tissue_positions_list.csv
+      scale_factor_file: GSM4565823_P4_rep1_scalefactors_json.json
+      image_file: GSM4565823_P4_rep1_tissue_hires_image.png
+    "2":
+      position_file: GSM4565824_P4_rep2_tissue_positions_list.csv
+      scale_factor_file: GSM4565824_P4_rep2_scalefactors_json.json
+      image_file: GSM4565824_P4_rep2_tissue_hires_image.png
+
+# ---------------------------------------------------------------------------
+# 1000 Genomes (hg19)
+# ---------------------------------------------------------------------------
+thousand_genomes:
+  base_path: /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/1000Genome_hg19
+  pattern: "hg19_chr{chrom}.vcf.gz"
+
+# ---------------------------------------------------------------------------
+# Beagle
+# ---------------------------------------------------------------------------
+beagle:
+  jar: beagle.27Jul16.86a.jar
+  java: src/jdk-11.0.2/bin/java
+  threads: 24
+  memory: "10g"
+  model_scale: 2
+  iterations: 0
+  impute: false
+  gprobs: true
+
+# ---------------------------------------------------------------------------
+# Quality filter
+# ---------------------------------------------------------------------------
+quality_filter:
+  base_quality: 0
+  mapping_quality: 0
+
+# ---------------------------------------------------------------------------
+# CalicoST (somatic datasets only)
+# ---------------------------------------------------------------------------
+calicost:
+  base_dir: /data/maiziezhou_lab/leiy4/CalicoST
+  num_clones: 3
+  # Maps section_id → CalicoST output folder name
+  section_folder_map:
+    "1": P4_sec1
+    "2": P4_sec2
+
+# ---------------------------------------------------------------------------
+# SLURM
+# ---------------------------------------------------------------------------
+slurm:
+  account: maiziezhou_lab_phd_int
+  partition: interactive
+  qos: maiziezhou_lab_phd_int
+  conda_env: snv_caller
+  cpus_per_task: 30
+  mem: 128GB
+  time: "24:00:00"
+  mail_user: yuqi.lei@vanderbilt.edu

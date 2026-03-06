@@ -1,0 +1,51 @@
+# SPARCAL .gitignore
+
+# ======================== Data & output ========================
+data/
+apps/
+slurm_output/
+
+# ======================== Python ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ======================== Conda / venv ========================
+.conda/
+*.env
+.venv/
+venv/
+
+# ======================== OS ========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ======================== IDE ========================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ======================== Jupyter ========================
+.ipynb_checkpoints/
+*.ipynb
+
+# ======================== Pipeline outputs ========================
+*.pkl
+*.h5ad
+*.bam
+*.bam.bai
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.log
+*.out
+*.err
