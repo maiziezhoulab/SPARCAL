@@ -4,7 +4,7 @@
 #
 # Usage:
 #   cd /data/maiziezhou_lab/leiy4/SPARCAL
-#   bash slurm/submit_all.sh
+#   sbatch slurm/submit_all.sh
 #
 # Or submit individually:
 #   sbatch slurm/run_DLPFC.sh
