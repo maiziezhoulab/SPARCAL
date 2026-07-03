@@ -1,0 +1,4 @@
+chrom	pos	ref	alt	n_detected	n_total
+chr1	16688	G	A	5	744
+chr1	24280	C	T	51	744
+chr1	387296	A	G	5	744

@@ -1,0 +1,80 @@
+Errors Solved:
+
+Java Library Error
+
+Copylibjli.so: cannot open shared object file: No such file or directory
+
+Issue: Java Runtime Environment library paths not properly set
+Solution: Set up proper environment variables (PATH and LD_LIBRARY_PATH)
+
+
+Chromosome ID Mismatch
+
+CopyNo VCF records found
+
+Issue: Reference used "chr1" format while input used "1" format
+Solution: Created script to convert chromosome names consistently
+
+
+Tabix Indexing Error
+
+Copy[E::hts_idx_push] Chromosome blocks not continuous
+
+Issue: VCF wasn't properly sorted
+Solution: Added sorting by chromosome and position before indexing
+
+
+Unchecked Contig Error
+
+CopyContig 'chrmY' is not defined in the header
+
+Issue: Chromosomes in data weren't defined in VCF header
+Solution: Added proper contig definitions to header
+
+Tips for VCF Processing with Beagle:
+
+VCF File Requirements:
+
+Must be sorted by chromosome and position
+Must be compressed (.gz format)
+Must have tabix index (.tbi file)
+Chromosome names must match between input and reference
+
+
+File Preparation Checklist:
+Copy✓ Check chromosome naming convention
+✓ Ensure header contains all contigs
+✓ Sort VCF by chromosome and position
+✓ Compress with bgzip
+✓ Index with tabix
+
+Tool Dependencies:
+CopyRequired tools:
+- bgzip (for compression)
+- tabix (for indexing)
+- java (for Beagle)
+
+Processing Order:
+Copy1. Convert chromosome names
+2. Fix header
+3. Sort data
+4. Compress
+5. Index
+
+Best Practices:
+
+Always check chromosome naming in reference files first
+Validate VCF format before processing
+Keep both uncompressed and compressed versions for debugging
+Verify file sorting before indexing
+Ensure all tools are in PATH
+Monitor memory usage with large VCF files
+
+
+Common Gotchas:
+
+Double chromosome prefixes (e.g., 'chrchr1')
+Missing contig definitions in header
+Unsorted positions within chromosomes
+Non-gzipped files with .gz extension
+Missing environment variables

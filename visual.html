@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SNV Pipeline Flow Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.2/Recharts.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } = Recharts;
+
+        const PipelineFlow = () => {
+            const stages = [
+                {
+                    title: 'Beagle Output',
+                    data: [
+                        { name: 'beagle_chr', '0/0': 31124, '0/1': 16937, '1/1': 30137 },
+                        { name: 'beagle_filtered', '0/0': 2178514, '0/1': 102240, '1/1': 443330 }
+                    ]
+                },
+                {
+                    title: 'Sequence Error Filter',
+                    data: [
+                        { name: 'seq_error', '0/0': 0, '0/1': 25813, '1/1': 0 },
+                        { name: 'seq_no_error', '0/0': 2178514, '0/1': 76427, '1/1': 443330 }
+                    ]
+                },
+                {
+                    title: 'SVM1 Classification',
+                    data: [
+                        { name: 'svm1_high_conf', '0/0': 22251, '0/1': 18227, '1/1': 210275 },
+                        { name: 'svm1_low_conf', '0/0': 2156263, '0/1': 58200, '1/1': 233055 }
+                    ]
+                },
+                {
+                    title: 'SVM2 Classification',
+                    data: [
+                        { name: 'svm2_high_conf', '0/0': 17257, '0/1': 13275, '1/1': 169609 },
+                        { name: 'svm2_low_conf', '0/0': 4994, '0/1': 4952, '1/1': 40665 }
+                    ]
+                }
+            ];
+
+            const CustomTooltip = ({ active, payload, label }) => {
+                if (!active || !payload || !payload.length) return null;
+                const data = payload[0].payload;
+                const total = data['0/0'] + data['0/1'] + data['1/1'];
+                return (
+                    <div className="bg-white p-4 border rounded shadow">
+                        <p className="font-bold text-lg mb-2">{label}</p>
+                        <div className="space-y-1">
+                            <p>0/0: {data['0/0'].toLocaleString()} ({((data['0/0']/total)*100).toFixed(1)}%)</p>
+                            <p>0/1: {data['0/1'].toLocaleString()} ({((data['0/1']/total)*100).toFixed(1)}%)</p>
+                            <p>1/1: {data['1/1'].toLocaleString()} ({((data['1/1']/total)*100).toFixed(1)}%)</p>
+                            <p className="font-bold mt-2">Total: {total.toLocaleString()}</p>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="w-full p-8 bg-white">
+                    <h2 className="text-2xl font-bold mb-8 text-center">SNV Pipeline Flow with Genotype Distributions</h2>
+                    <div className="space-y-12">
+                        {stages.map((stage, idx) => (
+                            <div key={stage.title} className="space-y-4">
+                                <h3 className="text-xl font-semibold">{stage.title}</h3>
+                                <div className="h-64 w-full">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart
+                                            data={stage.data}
+                                            margin={{ top: 20, right: 30, left: 30, bottom: 5 }}
+                                        >
+                                            <XAxis dataKey="name" />
+                                            <YAxis />
+                                            <Tooltip content={<CustomTooltip />} />
+                                            <Legend />
+                                            <Bar dataKey="0/0" stackId="a" fill="#3B82F6" name="0/0 Genotype" />
+                                            <Bar dataKey="0/1" stackId="a" fill="#F59E0B" name="0/1 Genotype" />
+                                            <Bar dataKey="1/1" stackId="a" fill="#10B981" name="1/1 Genotype" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<PipelineFlow />, document.getElementById('root'));
+    </script>
+</body>
+</html>

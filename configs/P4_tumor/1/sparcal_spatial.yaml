@@ -1,0 +1,67 @@
+# SPARCAL Configuration File
+# Location: /data/maiziezhou_lab/leiy4/snv_calling/configs/{DATASET}/{section}/sparcal_config.yaml
+
+# ===== CLASSIFICATION PARAMETERS =====
+classification:
+  # Probability thresholds
+  prob_somatic_threshold: 0.5      # P(somatic) > this → classify as somatic
+  prob_germline_threshold: 0.5     # P(germline) > this → classify as germline
+  
+  # Likelihood ratio thresholds (backup classification)
+  likelihood_ratio_somatic: 5.0    # LR > 5 → strong somatic evidence
+  likelihood_ratio_germline: 0.2   # LR < 0.2 → strong germline evidence
+  
+  # Prior probabilities
+  prior_somatic: 0.01              # Base rate of somatic mutations (1%)
+  max_adjusted_prior: 0.20         # Cap on CNA-adjusted prior
+
+# ===== COVERAGE FILTERS =====
+coverage:
+  min_depth_per_spot: 0            # Minimum depth to consider a spot (0 = no filter)
+  min_spots_with_coverage: 3       # Minimum spots with coverage to call variant
+  coverage_weight_min: 5           # Depth below this gets reduced weight
+  coverage_weight_max: 30          # Depth above this gets full weight
+
+# ===== GERMLINE LIKELIHOOD WEIGHTS =====
+germline_weights:
+  vaf_uniformity: 0.25             # Low CV across spots
+  cna_adjusted_vaf_match: 0.30     # Matches expected germline VAF
+  purity_independence: 0.20        # No purity correlation
+  global_prevalence: 0.15          # Present across tissue
+  spatial_randomness: 0.10         # Not spatially clustered
+
+# ===== SOMATIC LIKELIHOOD WEIGHTS =====
+somatic_weights:
+  purity_correlation: 0.25         # Correlates with purity
+  spatial_clustering: 0.20         # Spatially coherent
+  clone_specificity: 0.20          # Enriched in tumor clones
+  cna_context_prior: 0.15          # LOH regions favored
+  vaf_variability: 0.10            # Moderate VAF range
+  germline_mismatch: 0.10          # Deviates from germline
+
+# ===== CNA-ADJUSTED PRIORS =====
+cna_priors:
+  LOH_amplified: 5.0               # Multiply base prior by this
+  LOH_neutral: 3.0
+  LOH_deletion: 2.0
+  balanced_diploid: 1.0
+  balanced_amplified: 1.5
+  imbalanced: 2.0
+
+# ===== SPATIAL ANALYSIS =====
+spatial:
+  neighbor_distance_threshold: 50   # Distance for spatial neighbor definition (pixels)
+  morans_i_min_spots: 5            # Minimum spots for Moran's I calculation
+  
+# ===== LIKELIHOOD PARAMETERS =====
+likelihood:
+  vaf_tolerance: 0.1               # Tolerance for VAF deviation in Gaussian likelihood
+  vaf_uniformity_penalty: 5.0      # Penalty coefficient for VAF variation
+  vaf_match_penalty: 10.0          # Penalty coefficient for CNA-adjusted VAF mismatch
+  
+# ===== OUTPUT OPTIONS =====
+output:
+  write_features_tsv: true          # Output detailed features TSV
+  write_summary_stats: true         # Output classification summary
+  include_uncertain: true           # Include uncertain variants in output VCF
+  compress_output: true             # Compress output files with bgzip

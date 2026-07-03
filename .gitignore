@@ -1,1 +1,72 @@
+# ============================================================
+# Data — never commit
+# ============================================================
 data/
+
+# ============================================================
+# Bundled binaries / third-party tools (vendored, large)
+# ============================================================
+apps/
+SPAdes-4.1.0-Linux/
+strelka-2.9.2.centos6_x86_64/
+# Big tool dirs — their own source/docs are force-added in the backup commit
+SpatialSNV/
+SpaceTracer/
+strelka2/
+
+# ============================================================
+# Archives
+# ============================================================
+*.tar.gz
+*.tar.bz2
+*.zip
+
+# ============================================================
+# Output plots / results / matrices / clustering
+# ============================================================
+scripts/tools/visualize_spatial_plots/
+scripts/tools/**/plots/
+clustering_benchmark/
+DISCGATE_imputation/
+comparison_results/
+beagle_validation_results/
+overlap_results/
+overlap_negative_gatk/
+overlap_negative_gatk_normal/
+overlap_p4tumorgatk_monopogen/
+copyKAT/
+bam_analysis/
+analysis/
+check_vcf/
+out_mapq0/
+out_mapq20/
+slurm_output/
+*.pkl
+*.png
+*.pdf
+
+# ============================================================
+# Analysis outputs mixed into run_slurm/ (VCFs, overlap sites)
+# ============================================================
+run_slurm/overlap/
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.tbi
+*.bam
+*.bai
+sites.txt
+
+# ============================================================
+# SLURM logs & job stdout/stderr
+# ============================================================
+slurm-*.out
+*.err
+*.out
+
+# ============================================================
+# Editor / misc
+# ============================================================
+.vscode/
+__pycache__/
+*.pyc

@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Default values
+show_lines=10
+count=false
+vcf_file=""
+
+# Function to display usage information
+usage() {
+    echo "Usage: check_vcf [--show N] [--count] vcf_file"
+    echo "Options:"
+    echo "  --show N    Show first N lines of the VCF (default: 10)"
+    echo "  --count     Count total number of non-header lines in the VCF"
+    echo "  vcf_file    Path to the VCF file (must be gzipped)"
+    exit 1
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --show)
+            if [[ $2 =~ ^[0-9]+$ ]]; then
+                show_lines=$2
+                shift 2
+            else
+                echo "Error: --show requires a numeric argument"
+                usage
+            fi
+            ;;
+        --count)
+            count=true
+            shift
+            ;;
+        *)
+            if [[ -z "$vcf_file" ]]; then
+                vcf_file=$1
+                shift
+            else
+                echo "Error: Unexpected argument: $1"
+                usage
+            fi
+            ;;
+    esac
+done
+
+# Check if VCF file is provided
+if [[ -z "$vcf_file" ]]; then
+    echo "Error: No VCF file specified"
+    usage
+fi
+
+# Check if file exists and is readable
+if [[ ! -f "$vcf_file" ]]; then
+    echo "Error: File not found: $vcf_file"
+    exit 1
+fi
+
+# Check if file is gzipped
+if [[ ! "$vcf_file" =~ \.gz$ ]]; then
+    echo "Error: File must be gzipped (end with .gz)"
+    exit 1
+fi
+
+# If count option is specified
+if [[ "$count" = true ]]; then
+    zcat "$vcf_file" | grep -v "^##" | wc -l
+fi
+
+# Show specified number of lines
+zcat "$vcf_file" | grep -v "^##" | head -n "$show_lines"

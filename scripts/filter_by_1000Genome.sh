@@ -65,3 +65,4 @@ export -f process_id
 parallel process_id ::: "${IDS[@]}" ::: "$method" ::: "$python_script" ::: "$vcf_base_path" ::: "$output_base_path"
 
 echo "All IDs processed."
+

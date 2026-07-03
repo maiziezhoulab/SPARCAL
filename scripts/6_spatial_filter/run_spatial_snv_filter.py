@@ -1,0 +1,1287 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import json
+from PIL import Image
+from collections import defaultdict
+import argparse
+from pathlib import Path
+from typing import Dict, List, Set, Tuple, Optional
+import glob
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from scipy.spatial import KDTree, Delaunay
+import logging
+from sklearn.neighbors import NearestNeighbors
+import gzip
+
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ======================== CONFIGURABLE PATHS AND CONSTANTS ========================
+# Base directories
+PROJECT_BASE_DIR = "/data/maiziezhou_lab/leiy4/snv_calling"
+ST_DATASETS_DIR = "/data/maiziezhou_lab/Datasets/ST_datasets"
+TUMOR_DATASETS_DIR = "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data"
+
+# Filter parameters
+DEFAULT_NEIGHBOR_DISTANCE = 1.5  # In units of spot diameters, slightly increased to account for spacing variations
+DEFAULT_QUALITY_FILTER = "baseQ0mapQ0"
+MAX_NEIGHBORS = 12  # Maximum number of neighbors to consider, slightly more than 6 to account for edge cases
+
+# Dataset-specific configurations
+DATASET_CONFIG = {
+    "DLPFC": {
+        "base_path": os.path.join(ST_DATASETS_DIR, "DLPFC12"),
+        "spatial_subdir": "spatial",
+        "position_file": "tissue_positions_list.csv",
+        "scale_factor_file": "scalefactors_json.json",
+        "image_file": "tissue_hires_image.png",
+        "output_subdir": "data/dlpfc"
+    },
+    "P4_TUMOR": {
+        "base_path": os.path.join(TUMOR_DATASETS_DIR, "P4_Visium"),
+        "spatial_subdir": "Meta_Data",
+        "position_file_patterns": {
+            "1": "GSM4565823_P4_rep1_tissue_positions_list.csv",
+            "2": "GSM4565824_P4_rep2_tissue_positions_list.csv"
+        },
+        "scale_factor_file_patterns": {
+            "1": "GSM4565823_P4_rep1_scalefactors_json.json",
+            "2": "GSM4565824_P4_rep2_scalefactors_json.json"
+        },
+        "image_file_patterns": {
+            "1": "GSM4565823_P4_rep1_tissue_hires_image.png",
+            "2": "GSM4565824_P4_rep2_tissue_hires_image.png"
+        },
+        "output_subdir": "data/P4_tumor"
+    },
+    "P6_TUMOR": {
+        "base_path": os.path.join(TUMOR_DATASETS_DIR, "P6_Visium"),
+        "spatial_subdir": "Meta_Data",
+        "position_file_patterns": {
+            "1": "GSM4565825_P6_rep1_tissue_positions_list.csv",
+            "2": "GSM4565826_P6_rep2_tissue_positions_list.csv"
+        },
+        "scale_factor_file_patterns": {
+            "1": "GSM4565825_P6_rep1_scalefactors_json.json",
+            "2": "GSM4565826_P6_rep2_scalefactors_json.json"
+        },
+        "image_file_patterns": {
+            "1": "GSM4565825_P6_rep1_tissue_hires_image.png",
+            "2": "GSM4565826_P6_rep2_tissue_hires_image.png"
+        },
+        "output_subdir": "data/P6_tumor"
+    }
+}
+
+
+# Visualization parameters
+FIGURE_SIZE = (16, 16)  # Size of output figures
+DPI = 300  # Resolution of output figures
+# COLORMAP = ['blue', 'white', 'red']  # Color gradient for visualization: blue (low) to red (high)
+# COLORMAP = [  '#4578b4','#e6e6e6','#d13b28']
+COLORMAP = [  '#4578b4','#e6e6e6','red']
+# =============================================================================
+
+class SpatialSNVFilter:
+    def __init__(self, dataset: str, section_id: Optional[str] = None, 
+                quality_filter: str = DEFAULT_QUALITY_FILTER, 
+                neighbor_distance: float = DEFAULT_NEIGHBOR_DISTANCE,
+                exclude_vcf_path: Optional[str] = None,
+                include_vcf_path: Optional[str] = None,
+                kept_variants_path: Optional[str] = None,
+                min_neighbours: int = 2,
+                out_tissue_file: Optional[str] = None):
+        """
+        Initialize the spatial SNV filter.
+        
+        Args:
+            dataset: Dataset name (e.g., 'dlpfc', 'P4_TUMOR', 'P6_TUMOR')
+            section_id: Section ID (required for some datasets)
+            quality_filter: Quality filter used (default from configured constant)
+            neighbor_distance: Distance threshold for determining neighbors (in spot diameters)
+            exclude_vcf_path: Optional path to VCF file with SNVs to exclude
+            include_vcf_path: Optional path to VCF file with SNVs to include (keep only these)
+            kept_variants_path: Optional path to VCF file with SNVs to keep directly (bypass spatial filtering)
+            min_neighbours: Minimum number of neighboring spots required to keep an SNV
+            out_tissue_file: Path to file containing list of out-tissue barcodes (will override auto-detection)
+        """
+        self.dataset = dataset.upper()
+        self.section_id = section_id
+        self.quality_filter = quality_filter
+        self.neighbor_distance = neighbor_distance
+        self.exclude_vcf_path = exclude_vcf_path
+        self.include_vcf_path = include_vcf_path
+        self.kept_variants_path = kept_variants_path
+        self.min_neighbours = min_neighbours
+        self.out_tissue_file = out_tissue_file
+        self.out_tissue_barcodes = set()
+        
+        # Initialize data structures
+        self.spot_positions = {}  # Dict mapping barcode to (x, y) position
+        self.spot_neighbors = {}  # Dict mapping barcode to list of neighbor barcodes
+        self.spot_snvs = defaultdict(set)  # Dict mapping barcode to set of SNVs
+        self.filtered_spot_snvs = defaultdict(set)  # Dict after spatial filtering
+        self.snv_ref_alt_map = {}
+
+        
+        # SNV pools for filtering
+        self.filter_snv_pool = set()  # Set of SNVs to be filtered out
+        self.include_snv_pool = set()  # Set of SNVs to keep (filter in)
+        self.kept_variants_pool = set()  # Set of SNVs to keep directly (bypass spatial filtering)
+        
+        # Set up paths
+        self.setup_paths()
+        
+        # Load out-tissue barcodes
+        if self.out_tissue_file:
+            self.load_out_tissue_barcodes()
+        
+    def setup_paths(self):
+        """Set up file paths based on dataset and section ID."""
+        # Get dataset config
+        if self.dataset not in DATASET_CONFIG:
+            raise ValueError(f"Unsupported dataset: {self.dataset}")
+            
+        config = DATASET_CONFIG[self.dataset]
+        
+        # Check section ID requirement
+        if self.dataset in ["DLPFC", "P4_TUMOR", "P6_TUMOR"] and not self.section_id:
+            raise ValueError(f"Section ID is required for {self.dataset} dataset")
+        
+        # Setup paths based on dataset and section ID
+        if self.dataset == "DLPFC":
+            # DLPFC-specific paths
+            self.spatial_base_dir = os.path.join(config["base_path"], self.section_id)
+            spatial_subdir = os.path.join(self.spatial_base_dir, config["spatial_subdir"])
+            
+            self.position_file = os.path.join(spatial_subdir, config["position_file"])
+            self.scale_factor_file = os.path.join(spatial_subdir, config["scale_factor_file"])
+            self.image_file = os.path.join(spatial_subdir, config["image_file"])
+            
+        elif self.dataset in ["P4_TUMOR", "P6_TUMOR"]:
+            # P4/P6 tumor-specific paths with section-specific file patterns
+            self.spatial_base_dir = os.path.join(
+                config["base_path"], 
+                f"spaceranger_align_rep{self.section_id}_hg19", 
+                config["spatial_subdir"]
+            )
+            
+            # Get the correct file patterns for this section
+            if self.section_id not in config["position_file_patterns"]:
+                raise ValueError(f"Section ID {self.section_id} not configured for {self.dataset}")
+                
+            position_file = config["position_file_patterns"][self.section_id]
+            scale_factor_file = config["scale_factor_file_patterns"][self.section_id]
+            image_file = config["image_file_patterns"][self.section_id]
+            
+            # Build full paths
+            self.position_file = os.path.join(self.spatial_base_dir, position_file)
+            self.scale_factor_file = os.path.join(self.spatial_base_dir, scale_factor_file)
+            self.image_file = os.path.join(self.spatial_base_dir, image_file)
+            
+            # Set the out-tissue file path if not already specified
+            if not self.out_tissue_file:
+                if self.dataset == "P4_TUMOR":
+                    # Hard-coded path for P4_TUMOR out-tissue barcodes
+                    self.out_tissue_file = os.path.join(
+                        config["base_path"],
+                        f"spaceranger_align_rep{self.section_id}_hg19",
+                        config["spatial_subdir"],
+                        "missing_barcodes.txt"
+                    )
+                elif self.dataset == "P6_TUMOR":
+                    # Hard-coded path for P6_TUMOR out-tissue barcodes
+                    self.out_tissue_file = os.path.join(
+                        config["base_path"],
+                        f"spaceranger_align_rep{self.section_id}_hg19",
+                        config["spatial_subdir"],
+                        "missing_barcodes.txt"
+                    )
+                
+                # Check if file exists and log
+                if os.path.exists(self.out_tissue_file):
+                    logger.info(f"Using out-tissue file: {self.out_tissue_file}")
+                else:
+                    logger.warning(f"Auto-detected out-tissue file not found: {self.out_tissue_file}")
+                    self.out_tissue_file = None  # Reset if file doesn't exist
+        
+        # Setup output directories
+        self.data_dir = os.path.join(
+            PROJECT_BASE_DIR, 
+            config["output_subdir"], 
+            self.section_id
+        )
+        
+        # SNV positions directory (now using VCF files)
+        self.snv_pos_dir = os.path.join(
+            self.data_dir, 
+            "output_VCFs/BAM_filtered", 
+            self.quality_filter,
+            "snv_vcf"
+        )
+        
+        # Output directory
+        self.output_dir = os.path.join(
+            self.data_dir, 
+            "spatial_analysis", 
+            self.quality_filter
+        )
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        logger.info(f"SNV positions directory: {self.snv_pos_dir}")
+        logger.info(f"Tissue positions file: {self.position_file}")
+        logger.info(f"Output directory: {self.output_dir}")
+    
+    def create_exclusion_snv_pool_from_vcf(self, vcf_path: str) -> Set[str]:
+        """
+        Create an SNV pool from a VCF file.
+        
+        Args:
+            vcf_path: Path to the VCF file (.vcf.gz)
+            
+        Returns:
+            Set of SNV IDs in the format "chrom_pos"
+        """
+        if not os.path.exists(vcf_path):
+            logger.error(f"VCF file not found: {vcf_path}")
+            return set()
+            
+        logger.info(f"Creating SNV pool from VCF: {vcf_path}")
+        
+        snv_pool = set()
+        
+        try:
+            # Open VCF file (handling gzip)
+            with gzip.open(vcf_path, 'rt') if vcf_path.endswith('.gz') else open(vcf_path, 'r') as f:
+                for line in f:
+                    # Skip header lines
+                    if line.startswith('#'):
+                        continue
+                    
+                    # Parse variant line
+                    fields = line.strip().split('\t')
+                    
+                    if len(fields) < 5:
+                        continue
+                        
+                    chrom = fields[0].replace("chr", "")  # Remove 'chr' prefix if present
+
+                    pos = fields[1]
+                    ref = fields[3]
+                    alt = fields[4]
+                    
+                    # Skip complex variants for simplicity
+                    if ',' in alt:
+                        continue
+                    
+                    # Generate SNV key (same format as in spot_snvs)
+                    snv_key = f"{chrom}_{pos}"
+                    snv_pool.add(snv_key)
+            
+            logger.info(f"Created SNV pool with {len(snv_pool)} variants")
+            #print some from the pool
+            logger.info(f"SNVs in pool: {list(snv_pool)[:5]}")
+
+            self.filter_snv_pool = snv_pool
+            return snv_pool
+            
+        except Exception as e:
+            logger.error(f"Error creating SNV pool from VCF: {e}")
+            return set()
+    
+    def create_inclusion_snv_pool(self, vcf_path: str) -> Set[str]:
+        """
+        Create an SNV inclusion pool from a VCF file.
+        Only SNVs in this pool will be kept.
+        
+        Args:
+            vcf_path: Path to the VCF file (.vcf.gz)
+            
+        Returns:
+            Set of SNV IDs in the format "chrom_pos"
+        """
+        if not os.path.exists(vcf_path):
+            logger.error(f"Include VCF file not found: {vcf_path}")
+            return set()
+            
+        logger.info(f"Creating SNV inclusion pool from VCF: {vcf_path}")
+        
+        snv_pool = set()
+        
+        try:
+            # Open VCF file (handling gzip)
+            with gzip.open(vcf_path, 'rt') if vcf_path.endswith('.gz') else open(vcf_path, 'r') as f:
+                for line in f:
+                    # Skip header lines
+                    if line.startswith('#'):
+                        continue
+                    
+                    # Parse variant line
+                    fields = line.strip().split('\t')
+                    
+                    if len(fields) < 5:
+                        continue
+                        
+                    chrom = fields[0].replace("chr", "")  # Remove 'chr' prefix if present
+                    pos = fields[1]
+                    ref = fields[3]
+                    alt = fields[4]
+                    
+                    # Skip complex variants for simplicity
+                    if ',' in alt:
+                        continue
+                    
+                    # Generate SNV key (same format as in spot_snvs)
+                    snv_key = f"{chrom}_{pos}"
+                    snv_pool.add(snv_key)
+            
+            logger.info(f"Created SNV inclusion pool with {len(snv_pool)} variants")
+            #print some from the pool
+            # logger.info(f"SNVs in pool: {list(snv_pool)[:5]}")
+            self.include_snv_pool = snv_pool
+            return snv_pool
+            
+        except Exception as e:
+            logger.error(f"Error creating SNV inclusion pool from VCF: {e}")
+            return set()
+
+    def create_kept_variants_pool(self, vcf_path: str) -> Set[str]:
+        """
+        Create a pool of SNVs to keep directly (bypass spatial filtering).
+        
+        Args:
+            vcf_path: Path to the VCF file (.vcf.gz)
+            
+        Returns:
+            Set of SNV IDs in the format "chrom_pos"
+        """
+        if not os.path.exists(vcf_path):
+            logger.error(f"Kept variants VCF file not found: {vcf_path}")
+            return set()
+            
+        logger.info(f"Loading variants to keep directly from: {vcf_path}")
+        
+        kept_variants = set()
+        
+        try:
+            # Open VCF file (handling gzip)
+            with gzip.open(vcf_path, 'rt') if vcf_path.endswith('.gz') else open(vcf_path, 'r') as f:
+                for line in f:
+                    # Skip header lines
+                    if line.startswith('#'):
+                        continue
+                    
+                    # Parse variant line
+                    fields = line.strip().split('\t')
+                    
+                    if len(fields) < 5:
+                        continue
+                        
+                    chrom = fields[0].replace("chr", "")  # Remove 'chr' prefix if present
+                    pos = fields[1]
+                    
+                    # Generate SNV key (same format as in spot_snvs)
+                    snv_key = f"{chrom}_{pos}"
+                    kept_variants.add(snv_key)
+            
+            logger.info(f"Loaded {len(kept_variants)} variants to keep directly")
+            if kept_variants:
+                logger.info(f"Sample kept variants: {list(kept_variants)[:5]}")
+            self.kept_variants_pool = kept_variants
+            return kept_variants
+            
+        except Exception as e:
+            logger.error(f"Error loading kept variants from VCF: {e}")
+            return set()
+            
+    def load_out_tissue_barcodes(self):
+        """Load the list of out-tissue barcodes from file."""
+        if not os.path.exists(self.out_tissue_file):
+            logger.warning(f"Out-tissue file not found: {self.out_tissue_file}")
+            return
+            
+        try:
+            logger.info(f"Loading out-tissue barcodes from {self.out_tissue_file}")
+            with open(self.out_tissue_file, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if parts:
+                        # First element is the barcode
+                        barcode = parts[0]
+                        self.out_tissue_barcodes.add(barcode)
+                        
+            logger.info(f"Loaded {len(self.out_tissue_barcodes)} out-tissue barcodes")
+        except Exception as e:
+            logger.error(f"Error loading out-tissue barcodes: {e}")
+            
+    def filter_out_snv_pool(self):
+        """
+        Filter out SNVs that appear in the filter_snv_pool from all spots.
+        This function modifies both spot_snvs and filtered_spot_snvs.
+        """
+        if not self.filter_snv_pool:
+            logger.warning("SNV pool is empty. No filtering will be performed.")
+            return
+            
+        logger.info(f"Filtering out {len(self.filter_snv_pool)} SNVs from the pool")
+        
+        # Count SNVs before filtering, and the union of all SNVs
+        before_total = sum(len(snvs) for snvs in self.spot_snvs.values())
+        before_union = set.union(*self.spot_snvs.values())
+        
+        # Filter out from spot_snvs
+        for barcode in self.spot_snvs:
+            self.spot_snvs[barcode] = self.spot_snvs[barcode] - self.filter_snv_pool
+        
+            
+        # Filter out from filtered_spot_snvs
+        for barcode in self.filtered_spot_snvs:
+            self.filtered_spot_snvs[barcode] = self.filtered_spot_snvs[barcode] - self.filter_snv_pool
+            
+        # Count SNVs after filtering
+        after_total = sum(len(snvs) for snvs in self.spot_snvs.values())
+        if self.spot_snvs:
+            after_union = set.union(*self.spot_snvs.values())
+        
+        logger.info(f"Removed {before_total - after_total} SNVs from all spots")
+        logger.info(f"Remaining SNVs: {after_total}")
+        logger.info(f"SNVs in `remove vcf` union before: {len(before_union)}")
+        logger.info(f"SNVs in `remove vcf` union after: {len(after_union)}")
+        logger.info(f"Unique SNVs removed: {len(before_union - after_union)}")
+
+    def filter_keep_snv_pool(self):
+        """
+        Keep only SNVs that appear in the include_snv_pool from all spots.
+        This function modifies both spot_snvs and filtered_spot_snvs.
+        """
+        if not self.include_snv_pool:
+            logger.warning("SNV inclusion pool is empty. No inclusion filtering will be performed.")
+            return
+            
+        logger.info(f"Keeping only {len(self.include_snv_pool)} SNVs from the inclusion pool")
+        
+        # Count SNVs before filtering, and the union of all SNVs
+        before_total = sum(len(snvs) for snvs in self.spot_snvs.values())
+        before_union = set.union(*self.spot_snvs.values()) if self.spot_snvs else set()
+        
+        # Filter to keep only SNVs in the inclusion pool
+        for barcode in self.spot_snvs:
+            self.spot_snvs[barcode] = self.spot_snvs[barcode] & self.include_snv_pool
+            
+        # Also filter the already filtered SNVs
+        for barcode in self.filtered_spot_snvs:
+            self.filtered_spot_snvs[barcode] = self.filtered_spot_snvs[barcode] & self.include_snv_pool
+            
+        # Count SNVs after filtering
+        after_total = sum(len(snvs) for snvs in self.spot_snvs.values())
+        if self.spot_snvs:
+            after_union = set.union(*self.spot_snvs.values()) if self.spot_snvs else set()
+        
+        logger.info(f"Kept {after_total} SNVs out of {before_total} total")
+        logger.info(f"Remaining SNVs: {after_total}")
+        logger.info(f"SNVs union before inclusion filter: {len(before_union)}")
+        logger.info(f"SNVs union after inclusion filter: {len(after_union)}")
+        logger.info(f"Unique SNVs filtered out: {len(before_union - after_union)}")
+        
+    def load_scale_factors(self) -> Dict:
+        """Load scale factors from JSON file."""
+        try:
+            with open(self.scale_factor_file, 'r') as f:
+                scale_factors = json.load(f)
+            logger.info(f"Loaded scale factors: {scale_factors}")
+            return scale_factors
+        except Exception as e:
+            logger.error(f"Error loading scale factors: {e}")
+            raise
+            
+    def load_spot_positions(self):
+        """Load spot positions from tissue positions list CSV file."""
+        try:
+            # Different formats for DLPFC vs P4/P6
+            if self.dataset == "DLPFC":
+                # Format: barcode, in_tissue, array_row, array_col, pxl_row_in_fullres, pxl_col_in_fullres
+                df = pd.read_csv(self.position_file, header=None)
+                for _, row in df.iterrows():
+                    barcode = row[0]
+                    in_tissue = int(row[1])
+                    if in_tissue == 1:  # Only consider spots that are in tissue
+                        # Skip if in out-tissue barcodes list
+                        if barcode in self.out_tissue_barcodes:
+                            continue
+                            
+                        array_x = float(row[4])  # Using pixel coordinates
+                        array_y = float(row[5])
+                        self.spot_positions[barcode] = (array_x, array_y)
+            else:
+                # Format for P4/P6: barcode-1, x, y, z, array_x, array_y
+                df = pd.read_csv(self.position_file, header=None)
+                for _, row in df.iterrows():
+                    barcode = row[0]
+                    
+                    # Skip if in out-tissue barcodes list
+                    if barcode in self.out_tissue_barcodes:
+                        continue
+                        
+                    array_x = float(row[4])
+                    array_y = float(row[5])
+                    self.spot_positions[barcode] = (array_x, array_y)
+            
+            logger.info(f"Loaded {len(self.spot_positions)} spot positions")
+        except Exception as e:
+            logger.error(f"Error loading spot positions: {e}")
+            raise
+    
+    def build_spatial_graph(self):
+        """
+        Build spatial graph by connecting neighboring spots in the hexagonal grid.
+        This implementation is optimized for the hexagonal arrangement of Visium spots.
+        """
+        if not self.spot_positions:
+            logger.info("Loading spot positions first...")
+            self.load_spot_positions()
+        
+        # Get spot diameter from scale factors
+        scale_factors = self.load_scale_factors()
+        spot_diameter = scale_factors.get("spot_diameter_fullres", 100.0) * 6 # Slightly increased for safety
+        
+        # Convert positions to numpy array for processing
+        barcodes = list(self.spot_positions.keys())
+        positions = np.array([self.spot_positions[b] for b in barcodes])
+        
+        # Use k-nearest neighbors to find potential neighbors
+        # For hexagonal grids, we should typically have 6 neighbors, but use MAX_NEIGHBORS
+        # to account for edge cases or grid irregularities
+        k = min(MAX_NEIGHBORS + 1, len(positions))  # +1 because it includes the point itself
+        
+        # Use scikit-learn's NearestNeighbors to find k nearest neighbors
+        nbrs = NearestNeighbors(n_neighbors=k, algorithm='auto').fit(positions)
+        distances, indices = nbrs.kneighbors(positions)
+        
+        # Calculate distance threshold based on spot diameter
+        neighbor_threshold = self.neighbor_distance * spot_diameter
+        
+        # For each spot, determine its neighbors
+        for i, barcode in enumerate(barcodes):
+            # Get indices of neighbors (skip first index which is the point itself)
+            neighbor_indices = indices[i, 1:]
+            neighbor_distances = distances[i, 1:]
+            
+            # Filter neighbors by distance threshold
+            valid_neighbors = [
+                barcodes[neighbor_indices[j]] 
+                for j in range(len(neighbor_indices)) 
+                if neighbor_distances[j] <= neighbor_threshold
+            ]
+            
+            self.spot_neighbors[barcode] = valid_neighbors
+        
+        # Visualize the hexagonal grid and neighbors (for debugging/validation)
+        self.visualize_hexagonal_grid()
+        
+        # Log neighbor statistics
+        neighbor_counts = [len(neighbors) for neighbors in self.spot_neighbors.values()]
+        logger.info(f"Built spatial graph with {len(self.spot_neighbors)} spots")
+        logger.info(f"Average neighbors per spot: {np.mean(neighbor_counts):.2f}")
+        logger.info(f"Min neighbors: {min(neighbor_counts)}, Max neighbors: {max(neighbor_counts)}")
+    
+    def visualize_hexagonal_grid(self):
+        """
+        Create a visualization of the hexagonal grid and neighbor connections to validate
+        the spatial graph building process.
+        """
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 12))
+        
+        # Get scale factor
+        scale_factors = self.load_scale_factors()
+        
+        # Plot all spot positions
+        x_coords = []
+        y_coords = []
+        for barcode, (x, y) in self.spot_positions.items():
+            x_coords.append(x)
+            y_coords.append(y)
+        
+        # Plot spots
+        ax.scatter(x_coords, y_coords, c='blue', s=30, alpha=0.6)
+        
+        # Plot neighbor connections for a sample of spots (to avoid cluttering)
+        # Pick ~20 random spots for connection visualization
+        if len(self.spot_neighbors) > 20:
+            import random
+            sample_barcodes = random.sample(list(self.spot_neighbors.keys()), 20)
+        else:
+            sample_barcodes = list(self.spot_neighbors.keys())
+        
+        # Draw connections
+        for barcode in sample_barcodes:
+            x1, y1 = self.spot_positions[barcode]
+            
+            # Draw connections to neighbors
+            for neighbor in self.spot_neighbors[barcode]:
+                x2, y2 = self.spot_positions[neighbor]
+                ax.plot([x1, x2], [y1, y2], 'r-', alpha=0.3, linewidth=0.5)
+        
+        # Add title and save
+        ax.set_title(f"Spatial Graph - Hexagonal Grid Structure\n(Showing connections for {len(sample_barcodes)} sample spots)")
+        ax.set_aspect('equal')
+        
+        # Save figure
+        grid_viz_path = os.path.join(self.output_dir, "hexagonal_grid_visualization.png")
+        plt.savefig(grid_viz_path, dpi=DPI, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved hexagonal grid visualization to: {grid_viz_path}")
+        
+    def load_snv_positions(self):
+        """Load SNV positions for each barcode from VCF files."""
+        # Find all barcode.vcf.gz files in the SNV VCF directory
+        vcf_files = glob.glob(os.path.join(self.snv_pos_dir, "*.vcf.gz"))
+        print(f"vcf_files path: {os.path.join(self.snv_pos_dir, '*.vcf.gz')}")
+        if not vcf_files:
+            logger.warning(f"No SNV VCF files found in {self.snv_pos_dir}")
+            return
+        
+        logger.info(f"Loading SNV positions from {len(vcf_files)} VCF files...")
+        
+        # Process each file
+        for vcf_file in vcf_files:
+            barcode = os.path.basename(vcf_file).replace('.vcf.gz', '')
+            
+            # Skip if barcode is not in our spatial data
+            if barcode not in self.spot_positions:
+                continue
+                    
+            # Load the SNVs from VCF file
+            try:
+                with gzip.open(vcf_file, 'rt') as f:
+                    for line in f:
+                        # Skip header lines
+                        if line.startswith('#'):
+                            continue
+                        
+                        # Parse VCF line
+                        parts = line.strip().split('\t')
+                        if len(parts) < 5:
+                            continue
+                        
+                        chrom = parts[0]
+                        pos = parts[1]
+                        ref = parts[3]
+                        alt = parts[4]
+                        
+                        # Standardize chromosome name (remove 'chr' prefix if present)
+                        chrom = chrom.replace("chr", "")
+                        snv_key = f"{chrom}_{pos}"
+                        self.spot_snvs[barcode].add(snv_key)
+                        
+                        # Store ref and alt information
+                        self.snv_ref_alt_map[snv_key] = (ref, alt)
+                        
+            except Exception as e:
+                logger.warning(f"Error loading SNVs from {vcf_file}: {e}")
+        
+        # Log statistics
+        spot_with_snvs = sum(1 for snvs in self.spot_snvs.values() if snvs)
+        total_snvs = sum(len(snvs) for snvs in self.spot_snvs.values())
+        
+        logger.info(f"Loaded SNVs for {spot_with_snvs} spots")
+        logger.info(f"Total SNVs: {total_snvs}")
+        logger.info(f"Loaded ref/alt information for {len(self.snv_ref_alt_map)} unique variants")
+        logger.info(f"Average SNVs per spot with SNVs: {total_snvs / max(1, spot_with_snvs):.2f}")
+    
+    def apply_spatial_filter_n_neighbours(self, min_neighbours: int = 2):
+        """
+        Apply spatial filtering to SNVs requiring presence in at least n neighboring spots.
+        
+        Args:
+            min_neighbours: Minimum number of neighboring spots that must share the SNV (default: 2)
+        
+        Returns:
+            Dictionary mapping barcodes to sets of filtered SNVs
+        """
+        if not self.spot_neighbors:
+            logger.info("Building spatial graph first...")
+            self.build_spatial_graph()
+            
+        if not self.spot_snvs:
+            logger.info("Loading SNV positions first...")
+            self.load_snv_positions()
+        
+        logger.info(f"Applying spatial filter requiring {min_neighbours} neighboring spots...")
+        
+        # Track statistics for kept variants
+        kept_variants_added = 0
+        kept_variants_unique = set()
+        kept_variants_by_barcode = defaultdict(int)
+        
+        # Process each spot
+        for barcode, snvs in self.spot_snvs.items():
+            if not snvs:
+                continue
+                
+            # Get neighbors
+            neighbors = self.spot_neighbors.get(barcode, [])
+            
+            # Skip if insufficient neighbors (unless we have kept variants)
+            if len(neighbors) < min_neighbours and not self.kept_variants_pool:
+                continue
+                
+            # Check each SNV
+            for snv in snvs:
+                # If SNV is in kept_variants_pool, keep it directly
+                if snv in self.kept_variants_pool:
+                    self.filtered_spot_snvs[barcode].add(snv)
+                    kept_variants_added += 1
+                    kept_variants_unique.add(snv)
+                    kept_variants_by_barcode[barcode] += 1
+                    continue
+                    
+                # Skip neighbor check if insufficient neighbors
+                if len(neighbors) < min_neighbours:
+                    continue
+                    
+                # Count how many neighbors have this SNV
+                neighbor_count = 0
+                for neighbor in neighbors:
+                    if snv in self.spot_snvs.get(neighbor, set()):
+                        neighbor_count += 1
+                
+                # Keep SNV if it appears in at least min_neighbours neighboring spots
+                if neighbor_count >= min_neighbours:
+                    self.filtered_spot_snvs[barcode].add(snv)
+        
+        # Log statistics
+        before_count = sum(len(snvs) for snvs in self.spot_snvs.values())
+        after_count = sum(len(snvs) for snvs in self.filtered_spot_snvs.values())
+        before_union = set.union(*self.spot_snvs.values()) if self.spot_snvs else set()
+        after_union = set.union(*self.filtered_spot_snvs.values()) if self.filtered_spot_snvs else set()
+        
+        spots_before = sum(1 for snvs in self.spot_snvs.values() if snvs)
+        spots_after = sum(1 for snvs in self.filtered_spot_snvs.values() if snvs)
+        
+        # Log kept variants statistics
+        if self.kept_variants_pool:
+            logger.info("\nKept Variants Statistics:")
+            logger.info(f"Total kept variants specified: {len(self.kept_variants_pool)}")
+            logger.info(f"Unique kept variants found in data: {len(kept_variants_unique)}")
+            logger.info(f"Total kept variant instances added: {kept_variants_added}")
+            logger.info(f"Spots with kept variants: {len(kept_variants_by_barcode)}")
+            
+            # Calculate how many variants were added *only* because they were in kept_variants_pool
+            spatial_filter_only = after_count - kept_variants_added
+            logger.info(f"SNVs kept due to spatial filtering only: {spatial_filter_only}")
+            logger.info(f"SNVs kept due to kept_variants specification: {kept_variants_added} ({kept_variants_added/max(1,after_count)*100:.2f}% of total)")
+            
+            # Show distribution of kept variants per barcode
+            variant_counts = list(kept_variants_by_barcode.values())
+            if variant_counts:
+                logger.info(f"Average kept variants per spot: {np.mean(variant_counts):.2f}")
+                logger.info(f"Max kept variants per spot: {max(variant_counts)}")
+        
+        logger.info(f"\nOverall Filtering Statistics:")
+        logger.info(f"Before filtering: {before_count} SNVs across {spots_before} spots")
+        logger.info(f"After filtering: {after_count} SNVs across {spots_after} spots")
+        logger.info(f"Before filter unique variants: {len(before_union)}")
+        logger.info(f"After filter unique variants: {len(after_union)}")
+        logger.info(f"Filtered out: {before_count - after_count} SNVs ({(before_count - after_count) / max(1, before_count) * 100:.2f}%)")
+        logger.info(f"Filtered out: {len(before_union) - len(after_union)} unique SNVs")
+        
+        return self.filtered_spot_snvs
+        
+    def generate_snv_count_maps(self):
+        """
+        Generate maps of SNV counts before and after filtering.
+        
+        Returns:
+            Two dictionaries mapping barcodes to SNV counts before and after filtering.
+        """
+        # Before filtering
+        before_counts = {barcode: len(snvs) for barcode, snvs in self.spot_snvs.items()}
+        
+        # After filtering
+        after_counts = {barcode: len(snvs) for barcode, snvs in self.filtered_spot_snvs.items()}
+        
+        # Fill in zeros for spots without SNVs
+        for barcode in self.spot_positions:
+            if barcode not in before_counts:
+                before_counts[barcode] = 0
+            if barcode not in after_counts:
+                after_counts[barcode] = 0
+        
+        return before_counts, after_counts
+    
+    def visualize_snv_counts(self, count_map: Dict[str, int], title: str, output_file: str):
+        """
+        Visualize SNV counts on the tissue image.
+        
+        Args:
+            count_map: Dict mapping barcode to SNV count
+            title: Title for the plot
+            output_file: Output file path for the visualization
+        """
+        try:
+            # Load the image
+            img = plt.imread(self.image_file)
+            
+            # Create figure and axis
+            fig, ax = plt.subplots(figsize=FIGURE_SIZE)
+            
+            # Display the image
+            ax.imshow(img, origin='upper')
+            
+            # Get scale factor
+            scale_factors = self.load_scale_factors()
+            scale = scale_factors.get('tissue_hires_scalef', 1.0)
+            
+            # Get maximum count for color normalization
+            max_count = max(count_map.values())
+            
+            if max_count == 0:
+                logger.warning("All counts are zero. Skipping visualization.")
+                return
+            
+            # Create colormap using configured colors
+            cmap = LinearSegmentedColormap.from_list('', COLORMAP)
+            norm = Normalize(vmin=0, vmax=max_count)
+            
+            # Prepare scatter plot data
+            x_coords = []
+            y_coords = []
+            colors = []
+            sizes = []
+            
+            for barcode, count in count_map.items():
+                if barcode in self.spot_positions:
+                    x, y = self.spot_positions[barcode]
+                    
+                    # Scale coordinates for visualization
+                    # Note: Coordinate systems might need to be flipped here
+                    if self.dataset == "DLPFC":
+                        x_scaled = y * scale
+                        y_scaled = x * scale
+                    else:
+                        # For P4/P6, adjust if needed based on actual coordinates
+                        x_scaled = y * scale
+                        y_scaled = x * scale
+                    
+                    x_coords.append(x_scaled)
+                    y_coords.append(y_scaled)
+                    colors.append(count)
+                    
+                    # Adjust size based on count (minimum size of 30)
+                    size = 30 + (count * 20 / max(1, max_count))
+                    sizes.append(size)
+            
+            # Plot all points
+            scatter = ax.scatter(x_coords, y_coords, 
+                              c=colors, 
+                              cmap=cmap,
+                              norm=norm,
+                              s=sizes,
+                              alpha=0.7)
+            
+            # Add colorbar
+            cbar = plt.colorbar(scatter, ax=ax, shrink=0.6)
+            cbar.set_label('SNV Count')
+            
+            # Add title
+            ax.set_title(title, fontsize=16)
+            
+            # Remove axes
+            ax.set_xticks([])
+            ax.set_yticks([])
+            
+            # Add summary stats to plot
+            non_zero_counts = [c for c in count_map.values() if c > 0]
+            stats_text = (
+                f"Total Spots: {len(count_map)}\n"
+                f"Spots with SNVs: {len(non_zero_counts)}\n"
+                f"Total SNVs: {sum(count_map.values())}\n"
+                f"Max SNVs per spot: {max_count}\n"
+                f"Mean SNVs per spot: {np.mean(list(count_map.values())):.2f}"
+            )
+            
+            # Add text box with stats
+            props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=12,
+                   verticalalignment='top', bbox=props)
+            
+            # Save figure
+            plt.savefig(output_file, dpi=DPI, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f"Visualization saved to: {output_file}")
+            
+        except Exception as e:
+            logger.error(f"Error creating visualization: {e}")
+            raise
+    
+    def run_analysis(self):
+        """
+        Run the complete spatial SNV filtering pipeline.
+        """
+        exclude_vcf_path = self.exclude_vcf_path
+        include_vcf_path = self.include_vcf_path
+        kept_variants_path = self.kept_variants_path
+        min_neighbours = self.min_neighbours
+
+        # 1. Load spot positions
+        self.load_spot_positions()
+        
+        # 2. Build spatial graph
+        self.build_spatial_graph()
+        
+        # 3. Load SNV positions
+        self.load_snv_positions()
+        
+        # 3.5. Create and apply SNV filter pool if provided
+        if exclude_vcf_path and os.path.exists(exclude_vcf_path):
+            logger.info(f"Excluding SNVs from VCF: {exclude_vcf_path}")
+            self.create_exclusion_snv_pool_from_vcf(exclude_vcf_path)
+            self.filter_out_snv_pool()
+        elif exclude_vcf_path:
+            logger.warning(f"Exclude VCF file not found: {exclude_vcf_path}. Continuing without excluding SNVs.")
+        
+        # 3.6. Apply inclusion filter if provided
+        if include_vcf_path and os.path.exists(include_vcf_path):
+            logger.info(f"Including only SNVs from VCF: {include_vcf_path}")
+            self.create_inclusion_snv_pool(include_vcf_path)
+            self.filter_keep_snv_pool()
+        elif include_vcf_path:
+            logger.warning(f"Include VCF file not found: {include_vcf_path}. Continuing without inclusion filtering.")
+        
+        # 3.7. Load kept variants if provided
+        if kept_variants_path and os.path.exists(kept_variants_path):
+            logger.info(f"Loading variants to keep directly: {kept_variants_path}")
+            self.create_kept_variants_pool(kept_variants_path)
+        elif kept_variants_path:
+            logger.warning(f"Kept variants VCF file not found: {kept_variants_path}. Continuing without kept variants.")
+        
+        # 4. Apply spatial filter
+        self.apply_spatial_filter_n_neighbours(min_neighbours=min_neighbours)
+
+        
+        # 5. Generate count maps
+        before_counts, after_counts = self.generate_snv_count_maps()
+        
+        # 6. Create visualizations
+        # Add SNV pool info to filenames if used
+        pool_suffix = ""
+        if exclude_vcf_path:
+            vcf_basename = os.path.basename(exclude_vcf_path)
+            pool_suffix = f"_no_{vcf_basename.replace('.vcf.gz', '')}"
+        if include_vcf_path:
+            vcf_basename = os.path.basename(include_vcf_path)
+            include_suffix = f"_only_{vcf_basename.replace('.vcf.gz', '')}"
+            pool_suffix = pool_suffix + include_suffix
+        
+        before_output = os.path.join(self.output_dir, f"snv_counts_before_filtering{pool_suffix}.png")
+        after_output = os.path.join(self.output_dir, f"snv_counts_after_filtering{pool_suffix}.png")
+        
+        pool_info = ""
+        if exclude_vcf_path:
+            pool_size = len(self.filter_snv_pool)
+            pool_info = f" (Excluded {pool_size} SNVs from: {os.path.basename(exclude_vcf_path)})"
+        if include_vcf_path:
+            include_size = len(self.include_snv_pool)
+            include_info = f" (Kept only {include_size} SNVs from: {os.path.basename(include_vcf_path)})"
+            pool_info = pool_info + include_info
+        
+        self.visualize_snv_counts(
+            before_counts, 
+            f"SNV Counts Before Spatial Filtering - {self.dataset} {self.section_id}{pool_info}", 
+            before_output
+        )
+        
+        self.visualize_snv_counts(
+            after_counts, 
+            f"SNV Counts After Spatial Filtering - {self.dataset} {self.section_id}{pool_info}",
+            after_output
+        )
+        
+        # 7. Save filtered SNVs to files
+        # Determine subdirectory name for filtered SNVs
+        filtered_subdir = "filtered_snvs"
+        if pool_suffix:
+            filtered_subdir += pool_suffix
+            
+        filtered_dir = os.path.join(self.output_dir, filtered_subdir)
+        self.save_filtered_snvs(filtered_dir)
+        
+        return {
+            "before_counts": before_counts,
+            "after_counts": after_counts,
+            "visualizations": {
+                "before": before_output,
+                "after": after_output
+            },
+            "filtered_dir": filtered_dir
+        }
+        
+    def save_filtered_snvs(self, output_dir: str = None):
+        """
+        Save filtered SNVs to VCF files.
+        
+        Args:
+            output_dir: Optional custom directory to save filtered SNVs
+        """
+        import subprocess
+        
+        filtered_dir = output_dir if output_dir else os.path.join(self.output_dir, "filtered_snvs")
+        os.makedirs(filtered_dir, exist_ok=True)
+        
+        logger.info(f"Saving filtered SNVs to {filtered_dir}")
+        
+        # Paths to tools
+        BGZIP = "/data/maiziezhou_lab/leiy4/snv_calling/apps/bgzip"
+        BCFTOOLS = "/data/maiziezhou_lab/leiy4/snv_calling/apps/bcftools"
+        
+        # Create a summary VCF file with all filtered variants
+        all_variants_file = os.path.join(filtered_dir, "all_filtered_variants.vcf")
+        all_variants = set()
+        
+        # Count successful saves
+        saved_count = 0
+        
+        # Save VCF for each barcode
+        for barcode, snvs in self.filtered_spot_snvs.items():
+            if not snvs:
+                continue
+            
+            # Create temporary VCF file
+            temp_vcf = os.path.join(filtered_dir, f"{barcode}.vcf")
+            output_vcf_gz = os.path.join(filtered_dir, f"{barcode}.vcf.gz")
+            
+            try:
+                with open(temp_vcf, 'w') as f:
+                    # Write VCF header
+                    f.write("##fileformat=VCFv4.2\n")
+                    f.write("##source=SpatialSNVFilter\n")
+                    f.write(f"##dataset={self.dataset}\n")
+                    if self.section_id:
+                        f.write(f"##section_id={self.section_id}\n")
+                    f.write(f"##quality_filter={self.quality_filter}\n")
+                    f.write("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">\n")
+                    f.write("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">\n")
+                    f.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+                    f.write(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{barcode}\n")
+                    
+                    # Write variant records (sorted by chromosome and position)
+                    sorted_snvs = sorted(snvs, key=lambda x: (x.split('_')[0], int(x.split('_')[1])))
+                    for snv in sorted_snvs:
+                        chrom, pos = snv.split('_', 1)
+                        # Get ref and alt from our dictionary, default to "N" if not found
+                        ref, alt = self.snv_ref_alt_map.get(snv, ("N", "N"))
+                        
+                        # Write VCF line
+                        f.write(f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t.\tPASS\t.\tGT\t./.\n")
+                        all_variants.add((chrom, pos, ref, alt))
+                
+                # Compress the VCF file
+                compress_cmd = f"{BGZIP} -f {temp_vcf}"
+                result = subprocess.run(compress_cmd, shell=True, capture_output=True)
+                
+                if result.returncode != 0:
+                    logger.warning(f"Failed to compress VCF for {barcode}: {result.stderr.decode()}")
+                    continue
+                
+                # Index the compressed VCF
+                index_cmd = f"{BCFTOOLS} index -t {output_vcf_gz}"
+                result = subprocess.run(index_cmd, shell=True, capture_output=True)
+                
+                if result.returncode != 0:
+                    logger.warning(f"Failed to index VCF for {barcode}: {result.stderr.decode()}")
+                    # Still count as success since VCF was created
+                
+                saved_count += 1
+                
+            except Exception as e:
+                logger.warning(f"Error saving VCF for {barcode}: {e}")
+                # Clean up temp file if it exists
+                if os.path.exists(temp_vcf):
+                    os.remove(temp_vcf)
+        
+        logger.info(f"Saved {saved_count} barcode VCF files")
+        
+        # Write the summary VCF file with all variants
+        try:
+            with open(all_variants_file, 'w') as f:
+                # Write VCF header
+                f.write("##fileformat=VCFv4.2\n")
+                f.write("##source=SpatialSNVFilter_summary\n")
+                f.write(f"##dataset={self.dataset}\n")
+                if self.section_id:
+                    f.write(f"##section_id={self.section_id}\n")
+                f.write(f"##quality_filter={self.quality_filter}\n")
+                f.write("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">\n")
+                f.write("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">\n")
+                f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+                
+                # Write all unique variants sorted by chromosome and position
+                for chrom, pos, ref, alt in sorted(all_variants, key=lambda x: (x[0], int(x[1]))):
+                    f.write(f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t.\tPASS\t.\n")
+            
+            # Compress and index the summary VCF
+            all_variants_gz = all_variants_file + ".gz"
+            compress_cmd = f"{BGZIP} -f {all_variants_file}"
+            result = subprocess.run(compress_cmd, shell=True, capture_output=True)
+            
+            if result.returncode == 0:
+                index_cmd = f"{BCFTOOLS} index -t {all_variants_gz}"
+                subprocess.run(index_cmd, shell=True, capture_output=True)
+                logger.info(f"Saved summary of all filtered variants to: {all_variants_gz}")
+            else:
+                logger.warning(f"Failed to compress summary VCF: {result.stderr.decode()}")
+                
+        except Exception as e:
+            logger.warning(f"Error creating summary VCF: {e}")
+        
+        # Also save a summary file
+        summary_file = os.path.join(self.output_dir, "spatial_filtering_summary.txt")
+        with open(summary_file, 'w') as f:
+            f.write(f"Spatial SNV Filtering Summary\n")
+            f.write(f"============================\n\n")
+            f.write(f"Dataset: {self.dataset}\n")
+            if self.section_id:
+                f.write(f"Section ID: {self.section_id}\n")
+            f.write(f"Quality Filter: {self.quality_filter}\n\n")
+            
+            spots_before = sum(1 for snvs in self.spot_snvs.values() if snvs)
+            spots_after = sum(1 for snvs in self.filtered_spot_snvs.values() if snvs)
+            
+            snvs_before = sum(len(snvs) for snvs in self.spot_snvs.values())
+            snvs_after = sum(len(snvs) for snvs in self.filtered_spot_snvs.values())
+            
+            f.write(f"Total spots: {len(self.spot_positions)}\n")
+            f.write(f"Spots with SNVs before filtering: {spots_before}\n")
+            f.write(f"Spots with SNVs after filtering: {spots_after}\n\n")
+            
+            f.write(f"Total SNVs before filtering: {snvs_before}\n")
+            f.write(f"Total SNVs after filtering: {snvs_after}\n")
+            f.write(f"SNVs filtered out: {snvs_before - snvs_after} ({(snvs_before - snvs_after) / max(1, snvs_before) * 100:.2f}%)\n")
+            
+            # Add information about the SNV pool if used
+            if self.filter_snv_pool:
+                f.write(f"\nSNV Pool Information:\n")
+                f.write(f"SNVs in exclusion pool: {len(self.filter_snv_pool)}\n")
+            
+            if self.include_snv_pool:
+                f.write(f"\nSNV Inclusion Pool Information:\n")
+                f.write(f"SNVs in inclusion pool: {len(self.include_snv_pool)}\n")
+                snvs_in_inclusion_pool = sum(1 for snvs in self.filtered_spot_snvs.values() 
+                                            for snv in snvs if snv in self.include_snv_pool)
+                f.write(f"SNVs in final result also in inclusion pool: {snvs_in_inclusion_pool}\n")
+                
+            # Add information about kept variants
+            if self.kept_variants_pool:
+                # Count how many kept variants made it to the final set
+                kept_in_final = set()
+                kept_count = 0
+                for snvs in self.filtered_spot_snvs.values():
+                    for snv in snvs:
+                        if snv in self.kept_variants_pool:
+                            kept_count += 1
+                            kept_in_final.add(snv)
+                            
+                f.write(f"\nKept Variants Information:\n")
+                f.write(f"SNVs in kept variants pool: {len(self.kept_variants_pool)}\n")
+                f.write(f"Unique kept variants found in data: {len(kept_in_final)}\n")
+                f.write(f"Total kept variant instances in final set: {kept_count}\n")
+                
+            f.write(f"\nNeighbor distance threshold: {self.neighbor_distance} spot diameters\n")
+            f.write(f"Average neighbors per spot: {np.mean([len(n) for n in self.spot_neighbors.values()]):.2f}\n")
+            f.write(f"\nAll filtered variants summary saved to: {all_variants_file}\n")
+            f.write(f"Total unique filtered variants: {len(all_variants)}\n")
+
+def main():
+    """Main function to run the spatial SNV filtering pipeline."""
+    parser = argparse.ArgumentParser(description="Spatial SNV Filtering Pipeline")
+    
+    # Required arguments
+    parser.add_argument("--dataset", required=True, 
+                    choices=[k.lower() for k in DATASET_CONFIG.keys()],
+                    help="Dataset name")
+    
+    # Optional arguments
+    parser.add_argument("--section_id", 
+                    help="Section ID (required for some datasets)")
+    parser.add_argument("--quality_filter", default=DEFAULT_QUALITY_FILTER, 
+                    help=f"Quality filter (default: {DEFAULT_QUALITY_FILTER})")
+    parser.add_argument("--neighbor_distance", type=float, default=DEFAULT_NEIGHBOR_DISTANCE,
+                    help=f"Distance threshold for neighboring spots in spot diameters (default: {DEFAULT_NEIGHBOR_DISTANCE})")
+    parser.add_argument("--output_dir", 
+                    help="Custom output directory (overrides default)")
+    parser.add_argument("--exclude_vcf",
+                    help="Path to a VCF file containing SNVs to exclude from analysis")
+    parser.add_argument("--include_vcf",
+                    help="Path to a VCF file containing SNVs to include (only keep these SNVs)")
+    parser.add_argument("--kept_variants",
+                    help="Path to a VCF file containing SNVs to keep directly (bypass spatial filtering)")
+    parser.add_argument("--min_neighbours", type=int, default=2,
+                    help="Minimum number of neighboring spots that must share the SNV (default: 2)")
+    parser.add_argument("--out_tissue_file",
+                    help="Path to a file containing a list of out-tissue barcodes to exclude")
+
+    
+    args = parser.parse_args()
+    
+    # Create spatial filter
+    filter = SpatialSNVFilter(
+        dataset=args.dataset,
+        section_id=args.section_id,
+        quality_filter=args.quality_filter,
+        neighbor_distance=args.neighbor_distance,
+        exclude_vcf_path=args.exclude_vcf,
+        include_vcf_path=args.include_vcf,
+        kept_variants_path=args.kept_variants,
+        min_neighbours=args.min_neighbours,
+        out_tissue_file=args.out_tissue_file
+    )
+    
+
+    # Override output directory if specified
+    if args.output_dir:
+        filter.output_dir = args.output_dir
+        os.makedirs(filter.output_dir, exist_ok=True)
+        logger.info(f"Using custom output directory: {filter.output_dir}")
+    
+    # Run analysis
+    results = filter.run_analysis()
+    
+    logger.info("Analysis complete!")
+    logger.info(f"Output directory: {filter.output_dir}")
+
+    # print out the set size of original, filtered, and excluded SNVs
+    # logger.info(f"Original SNV pool size: {len(filter.spot_snvs)}")
+    # logger.info(f"Filtered SNV pool size: {sum(len(snvs) for snvs in filter.filtered_spot_snvs.values())}")
+    # logger.info(f"Excluded SNV pool size: {len(filter.spot_snv) - sum(len(snvs) for snvs in filter.filtered_spot_snvs.values())}")
+    
+    return filter, results
+
+
+if __name__ == "__main__":
+    filter, results = main()
+
+# Usage for P4_TUMOR dataset, keep Beagle directly, section 1, calc inclusion with /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Somatic_Mutect2/P4_somatic_snp_chr1_22.vcf.gz
+# python scripts/6_spatial_filter/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --exclude_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor/1/output_VCFs/beagle/baseQ0mapQ0/all_filtered_in.vcf.gz --min_neighbours 1 --include_vcf /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Somatic_Mutect2/P4_somatic_snp_chr1_22.vcf.gz
+
+# Usage for P4_TUMOR, section 1
+# python scripts/6_spatial_filter/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --kept_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor/1/output_VCFs/beagle/baseQ0mapQ0/all_filtered_in.vcf.gz --min_neighbours 1
+
+# python scripts/6_spatial_filter/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --include_vcf /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Normal_WES/P4_Normal_WES_gatk_snp_chr1_22.vcf.gz --min_neighbours 6
+# python scripts/6_spatial/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --exclude_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor/1/output_VCFs/beagle/baseQ0mapQ0/all_filtered_in.vcf.gz --include_vcf /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Somatic_Mutect2/P4_somatic_exome_snps.vcf --min_neighbours 6
+# python scripts/6_spatial/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --exclude_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor/1/output_VCFs/beagle/baseQ0mapQ0/all_filtered_in.vcf.gz --include_vcf /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Normal_WES/P4_Normal_WES_gatk_snp_chr1_22.vcf.gz --min_neighbours 0
+# python scripts/6_spatial/run_spatial_snv_filter.py --dataset p4_tumor --section_id 1 --quality_filter baseQ0mapQ0 --exclude_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor/1/output_VCFs/beagle/baseQ0mapQ0/all_filtered_in.vcf.gz  
+
+# /lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Normal_WES/P4_Normal_WES_gatk_snp_chr1_22.vcf.gz
+
+# Run on DLPFC 151507, include beagle SNVs, min_neighbours=2
+# python scripts/6_spatial_filter/run_spatial_snv_filter.py --dataset dlpfc --section_id 151673 --quality_filter baseQ0mapQ0 --min_neighbours 2 --exclude_vcf /data/maiziezhou_lab/leiy4/snv_calling/data/dlpfc/151507/output_VCFs/beagle/baseQ0mapQ0/all_filtered_out.vcf.gz
+# Run on DLPFC 151507 baseQ13mapQ20, kept denovo variants, min_neighbours=3
+# python scripts/6_spatial_filter/run_spatial_snv_filter.py --dataset dlpfc --section_id 151508 --quality_filter baseQ0mapQ0 --min_neighbours 1
