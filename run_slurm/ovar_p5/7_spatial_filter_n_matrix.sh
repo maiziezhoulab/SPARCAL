@@ -28,8 +28,11 @@ CALICOST_DIR="/data/maiziezhou_lab/Pankaj/calicost_p5/results/P5_calicost_cna/cl
 CLONE_LABELS_FILE="${CALICOST_DIR}/clone_labels.tsv"
 CNV_SEGMENTS_FILE="${CALICOST_DIR}/cnv_seglevel.tsv"
 
-# Beagle output used for both exclude and kept_variants
-BEAGLE_VCF="${DATA_BASE}/${SECTION_ID}/output_VCFs/beagle/${QUALITY_FILTER}/all_filtered_in.vcf.gz"
+# NOTE: do NOT pass --exclude_vcf/--kept_variants here. all_filtered_in = the beagle-KEPT
+# 1KGP-concordant "defined" germline variants; excluding it strips every defined variant
+# from the per-spot sets (empties the 1000G matrix, leaves germline denovo-only). P4/P6/DCIS
+# pass neither flag, so their defined variants survive into the per-spot germline files.
+# (Fixed 2026-07-07 — was `--exclude_vcf ${BEAGLE_VCF} --kept_variants ${BEAGLE_VCF}`.)
 
 echo "SLURM_JOBID: $SLURM_JOBID"
 echo "Start time: $(date)"
@@ -47,8 +50,6 @@ python scripts/6_spatial_filter/run_spatial_snv_filter_enhanced.py \
     --quality_filter ${QUALITY_FILTER} \
     --clone_labels ${CLONE_LABELS_FILE} \
     --cnv_segments ${CNV_SEGMENTS_FILE} \
-    --exclude_vcf ${BEAGLE_VCF} \
-    --kept_variants ${BEAGLE_VCF} \
     --min_expression_germline 2 \
     --min_expression_somatic 1 \
     --neighbor_distance 2.0 \

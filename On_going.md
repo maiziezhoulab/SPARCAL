@@ -7,7 +7,125 @@ Dynamically updated task list. When asked to "check ongoing tasks", Claude shoul
 
 ---
 
-## 2026-07-02 (later) — DLPFC: SPARCAL_normal rename + UMI dedup wired (dedup NOT yet submitted)
+## 2026-07-07 — OVAR_P5: step-3 fix VERIFIED healthy; NEW `1000G=0` matrix anomaly (runner --exclude_vcf)
+
+**Chain `12390112..117` COMPLETED — the step-3 `extract_metrics` fix worked, all previously-zero
+numbers are now real:** step 3 `Total beagle variants` 5552/4955/… (was 0), transitions **16,744
+shifted / 45,212 stable** (was 0/0); step 5 classifier results non-empty (het 33,648 / hom 93,908 /
+predictions 344,363); step 7 `Total SNV instances 4,038,488` / 126,764 unique (was 0), classification
+**germline 71,540 (defined 61,850 + denovo 9,690), somatic 11,720 (denovo), ambiguous 105,482**;
+per-barcode txts 2,109 germline / 2,099 somatic.
+
+**4-class SPARCAL matrices built** (`generate_sparcal_matrices.py`, direct): rows 2,108 —
+germline **9,562**, somatic **11,720**, merged **21,282**, but **`1000G` = 0**.
+
+**⚠️ NEW ANOMALY — `1000G` matrix is empty; germline matrix is denovo-only.** All 55,225 rows in the
+germline per-barcode txts are `race==denovo`, **0 `defined`** → the 1000G class (germline ∩ defined)
+is empty and the germline matrix (9,562) omits the 61,850 defined/1KGP variants. **Root cause: the
+OVAR_P5 step-7 runner `run_slurm/ovar_p5/7_spatial_filter_n_matrix.sh` passes
+`--exclude_vcf ${BEAGLE_VCF}` AND `--kept_variants ${BEAGLE_VCF}` where `BEAGLE_VCF=all_filtered_in.vcf.gz`
+(61,989 = the beagle-KEPT 1KGP-concordant "defined" variants).** `--exclude_vcf` removes those from
+every spot's set (log: `Exclusion pool: 61978` → `SNVs after pool filtering: … -> 0` for the defined
+tier), so the per-spot germline files keep only denovo. **P6/DCIS pass NEITHER `--exclude_vcf` nor
+`--kept_variants`** (P6 `SPATIAL_ARGS` has only tumor_purity/clone/cnv/min_expression), so their
+defined variants survive → P6 `1000G` matrix = 125,269, germline per-barcode files hold both defined
+(8,626) + denovo (7,343). Excluding `all_filtered_in` (the germline you want) looks like a copy-paste
+bug — if anything, only `all_filtered_out` (beagle-rejected junk) would be a sensible exclude.
+- **FIX APPLIED 2026-07-07 (user approved):** removed `--exclude_vcf ${BEAGLE_VCF}` and
+  `--kept_variants ${BEAGLE_VCF}` from `run_slurm/ovar_p5/7_spatial_filter_n_matrix.sh` (now matches
+  P6/DCIS, which pass neither). `bash -n` clean; only comments mention `BEAGLE_VCF` now.
+- **STEP 7 RE-RUN — job `12399551` COMPLETED ✅ 2026-07-07T14:40 (34m46s, MaxRSS ~2.3 GB).** With the
+  fixed runner (no `--exclude_vcf`/`--kept_variants`). Step 6 `vcf_by_spot` reused. Summary now healthy:
+  germline **71,447 (defined 61,850 + denovo 9,597)**, somatic **11,729 (denovo)**, ambiguous 105,566;
+  per-barcode txts **2,109 germline / 2,100 somatic**, and germline txts carry BOTH `defined` (2.5M
+  rows) and `denovo` (2.9M rows) — the fix worked (was denovo-only).
+- **MATRICES REBUILT ✅ 2026-07-08** (`generate_sparcal_matrices.py`, direct). Note: the 13:52 matrices
+  were STALE (built before the 14:40 step-7 finish → 1000G=(2108,0), germline=9562 denovo-only). Rebuilt
+  from the corrected step-7 output — **anomaly RESOLVED**, all cross-checks hold:
+  **1000G (2108, 61,850)** (was 0) · germline (2108, **71,447**) = 1000G+UPV · somatic (2108, **11,729**)
+  · merged (2108, **83,176**) = germline+somatic. OVAR_P5 pipeline is now COMPLETE end-to-end.
+
+---
+
+## 2026-07-05 — OVAR_P5: pipeline started (step 1 mpileup submitted)
+
+**OVAR_P5 (section `P5_sr13`) was stuck at step 0 only** — 2,108 per-barcode BAMs
+in `data/ovar_p5/P5_sr13/split_BAM/` (job 12299132, done 2026-07-02), no downstream
+outputs (no VCFs/matrices).
+
+- **`12368216` mpileup_ (step 1) — COMPLETED ✓ 2026-07-05 20:15** (elapsed 3h55m,
+  MaxRSS 21.7 GB, node cn1817). 22 region VCFs
+  `output_VCFs/mpileup_multi_bam/baseQ0mapQ0/region_chr{1..22}.vcf.gz` (autosomes
+  only) + `merged_sorted_gt.vcf.gz` = **458,126 records**, index valid. (Log's
+  "Total SNPs found: 3669582" = pre-merge raw per-region count.) NB output files are
+  `region_chr*.vcf.gz`, not `chr*.vcf.gz`.
+- **Steps 2→6 — COMPLETED** (afterok chain `submit_chain_2_7.sh`, 2026-07-05):
+  `12372470` beagle (7m) → `12372471` genotype-shift (34s) → `12372472` seq-error (3s)
+  → `12372473` nn_classifier (10s) → `12372474` single-BAM filter (30m). Step 6 verified:
+  **2108/2108 spots with SNVs, 2108 per-spot VCFs** in
+  `output_VCFs/spotprofiles/baseQ0mapQ0/vcf_by_spot/`.
+- **Step 7 (`12372475`) — FAILED in 8s, now FIXED (2026-07-06).** `run_spatial_snv_filter_enhanced.py`
+  argparse `choices` list omitted `ovar_p5` (`error: argument --dataset: invalid choice: 'ovar_p5'`),
+  even though its DATASET_CONFIGS + spatial-file dispatch already handle OVAR_P5. Added
+  `'ovar_p5'` to the choices list (one line). Verified clone_labels.tsv exists (43 KB) and
+  `run_generate_matrix.py` already accepts ovar_p5 (choices derived from its config) → no
+  other blocker.
+- **Step 7 RE-RAN 2026-07-06 16:08 but produced DEGENERATE output — BROKEN, needs debug.**
+  `spatial_filter_summary.txt`: `Total SNV instances: 0`, `Unique variants: 0`,
+  `Spots with germline variants: 0`, `Spots with somatic variants: 0`. Classification:
+  **germline 61,978 (all `defined`, 0 denovo), 0 somatic, 0 ambiguous**. The
+  `germline/{defined,denovo}` dirs hold only the combined variant lists — **NO per-barcode
+  `{barcode}.txt`** were written (the spatial filter matched 0 variants to the 2108 spots).
+  Consequence: the only matrix is `OVAR_P5_P5_sr13_bcftools_normal_6_matrix.pkl` with shape
+  **(1, 61978)** — 1 row, not 2108 — i.e. garbage. **No 4-class SPARCAL matrices.**
+  - **ROOT CAUSE FOUND + FIXED 2026-07-07 — step 3 (`run_beagle_genotype_shifting.py`)
+    `extract_metrics` had no `OVAR_P5` branch.** Its dataset dispatch was
+    `if dataset in [DLPFC,…,DCIS]: … elif [P4,P6]: … else: raise ValueError("Unknown dataset
+    format")`. For OVAR_P5 every beagle variant raised, and that exception is **silently
+    swallowed** by the `try/except (ValueError, IndexError): continue` in
+    `_load_beagle_variants` → `beagle_variants` stayed **empty for all 22 chr** (`Total beagle
+    variants: 0` in the log) → the pre/post genotype join matched nothing → step 3 wrote
+    `metrics_by_transition={}`, `all_transitions={}` (0 shifted, 0 stable) though it counted
+    458,126×22 = 10,078,772 variants. Empty transition pkls → step-5 classifier collected
+    **0 training examples** → crashed at feature extraction (`No valid features extracted`),
+    leaving `Classifier/…/results/` empty → step 6/7 saw only the 61,978 Beagle `defined`
+    (1KGP) variants, 0 denovo → degenerate matrix.
+    **FIX:** added `"OVAR_P5"` to the DLPFC/DCIS branch of `extract_metrics`
+    (`run_beagle_genotype_shifting.py:192`). Verified inline: now returns `(BAF=1.0, DP=4)`,
+    no raise. (The identical branch in step 4 `run_sequence_error_model.py:293` already had
+    OVAR_P5 — step 4 was fixed a prior session but step 3 was missed; both are the same bug.)
+  - **Full dataset-dispatch sweep of steps 1–8 (2026-07-07):** the ONLY OVAR_P5 gap was
+    step 3 above. Confirmed OVAR_P5 present/handled in: step 1 mpileup (`:583`), step 2 beagle
+    (config-driven), step 4 (`:293`), step 5 classifier (config + chr auto-detect, no format
+    branch), step 6 filter_bams (falls into the identical `else` branch — already ran, 2108
+    per-spot VCFs), step 7 spatial_filter (`:276,:537`), and both matrix builders
+    (`run_generate_matrix.py:41`, `generate_sparcal_matrices.py:51`).
+  - **Downstream sweep (steps 4–8) confirmed clean 2026-07-07.** The step-7 "Total SNV
+    instances: 0" was NOT an independent step-7 bug: its per-spot load worked perfectly
+    (log: `Loaded 2467808 total SNV instances across 2108 spots`, chr-keys matched, RACE
+    parsed). The collapse `2467808 -> 0` was pool logic — with 0 denovo, step-6's SNV pool =
+    only the 61,978 `defined` variants, so `vcf_by_spot` held only those, and step-7's
+    exclusion pool (= those same 61,978) removed everything. Pure downstream of the empty
+    classifier. All downstream steps handle OVAR_P5 (4 `:293`, 5 config+chr-autodetect,
+    6 ran OK, 7 `:276/:537`, matrix builders `run_generate_matrix.py:41` /
+    `generate_sparcal_matrices.py:51`). Step 3 was the ONLY gap.
+  - **CHAIN RE-SUBMITTED 2026-07-07 (`submit_chain_2_7.sh`, with the step-3 fix):**
+    `12390112` beagle → `12390113` genotype-shift → `12390114` seq-error → `12390115`
+    nn_classifier → `12390116` single-BAM filter → `12390117` spatial_filter (afterok chain;
+    all PENDING at submit, `12390112` held on `QOSGrpCpuLimit`). Re-running step 6 is
+    essential (regenerates `vcf_by_spot` with the denovo/somatic variants). **VERIFY when
+    done:** step-3 log `Total beagle variants: >0` + non-zero shifted/stable; step 5 writes
+    non-empty `Classifier/…/results/neural_network_*.vcf.gz`; step-7 summary `Total SNV
+    instances > 0` with non-zero denovo/somatic + per-barcode `{barcode}.txt` under
+    `spatial_filter_purity/…/{germline,somatic}/`. Then run
+    `python scripts/6_spatial_filter/generate_sparcal_matrices.py --dataset OVAR_P5 --section_id P5_sr13`
+    for the 4-class SPARCAL matrices. **Do NOT trust the current (1, 61978) matrix.**
+- Config: GRCh38, `chr`-prefix, single section, 2108 in-tissue spots (see memory
+  `project_ovar_p5_dataset`).
+
+---
+
+## 2026-07-02 (later) — DLPFC: SPARCAL_normal rename + UMI dedup (split OOM-failed; fix applied 2026-07-05)
 
 **DLPFC matrix renamed** to `DLPFC_{section}_SPARCAL_normal_matrix.pkl` (step 8
 `generate_sparcal_matrices.py --classes normal`; `normal` = all germline). All 12
@@ -24,18 +142,63 @@ only read-only per-cell `bam_bycell/*.bam` (CB+UB tags). `run_slurm/dlpfc/0_umid
 `bam_base_path` config field in `mpileup_pipeline.py` + `run_filter_bams_by_snv_pools.py`
 (repoints only the BAM glob; `base_path` still serves read-only spatial).
 
-- **`12303350_[0-11]` umidedup_DLPFC — PENDING** (QOSGrpCpuLimit; 16 cpu × 12 tasks
-  exceeds the interactive QOS budget → runs a few at a time). This is the good job.
-- **`12303351` dlpfc_pipeline — mis-submitted then CANCELLED.** The user ran the
-  pipeline immediately after the dedup submit (not chained); tasks 0-3 FAILED in
-  ~6 s ("No BAM files found" — deduped BAMs don't exist yet), 4-11 were still
-  pending. `scancel 12303351` (also freed QOS CPU for the dedup job).
+- **`12303350_[0-11]` umidedup_DLPFC — RAN but the SPLIT step FAILED on all 12.**
+  merge (step 1) + `umi_tools dedup` (step 2) SUCCEEDED — every section has an intact
+  `data/dlpfc/{s}/dedup_tmp/merged.dedup.bam` (151507: 227.5M reads, 4984 barcodes).
+  BUT step 3 `samtools split -@ 16 -d CB -M 6000` was **OOM-`Killed`** on every section
+  (`.err`: "line 80: Killed … samtools split"). The dedup BAM is coordinate-sorted, so
+  all ~5000 per-cell writers stayed open the whole pass; `-@ 16` gave each its own
+  thread-pool block queue → >128 GB RSS → killed ~3 min in. The script had **no error
+  check on the split**, so it "indexed" the truncated files and printed a false
+  `[done] … BAMs = N`. Result in `bam_bycell_dedup/`: only 172–494 files/section (of
+  4984), all **byte-identical + truncated** (each exactly 1,983,855 B, no EOF marker,
+  unreadable, 0 `.bai`). The deduped pipeline never validly ran.
+- **`12303351` dlpfc_pipeline — mis-submitted then CANCELLED** (unchanged; irrelevant now).
 
-**CORRECT sequence (pipeline MUST wait for dedup):** let `12303350` finish, then
-`bash run_slurm/dlpfc/run_pipeline_DLPFC.sh` — OR chain it now:
-`DEP=12303350 bash run_slurm/dlpfc/run_pipeline_DLPFC.sh` (wrapper now supports a
-`DEP` env var → `--dependency=afterok`). NOTE: the 12 DLPFC matrices above are
-still the PRE-dedup call set — they'll be overwritten once the deduped pipeline runs.
+- **`12367865_[0-11]` (retry 2026-07-05, `-@1` single-thread) — STILL OOM-Killed**, but
+  the new guards caught it (every task aborted at `ERROR: samtools split failed/killed`,
+  no corrupt/false-success output, dedup correctly skipped). Single-threading did NOT
+  help → threads were not the cause.
+
+**ROOT CAUSE (found 2026-07-06):** the OOM is the **giant header**, not threads/FD limits.
+`merged.dedup.bam` carries a **~1.1M-line header** (194 @SQ but **19,968 @RG + 34,944 @PG**,
+one set per input per-cell BAM accumulated through merge+dedup). `samtools split` holds
+the parsed header in memory and attaches it to every one of ~5000 open output streams →
+>128 GB. Measured on a 4,870-cell slice: **fat header = 13.8 GB RSS (stalls); slim
+@HD+@SQ header = 0.86 GB RSS, all 4,870 files produced + quickcheck-OK.**
+
+**FIX applied 2026-07-06 to `0_umidedup_split_DLPFC.sh` step 3:** reheader the dedup BAM to
+a minimal `@HD`+`@SQ` header on the fly and pipe straight into split
+(`samtools reheader slim.hdr DEDUP | samtools split -@1 -M 6000 -d CB … -`), no 13 GB temp.
+Dropped @RG/@PG are unused downstream (bcftools mpileup ignores them; per-cell BAMs get the
+same lean header the non-dedup source BAMs already have). Kept: quickcheck gate on the
+split output, `|| exit 1` guards, and merge+dedup skip when a valid `merged.dedup.bam`
+exists. Mechanism verified end-to-end on a slice (streaming `reheader|split -` → 4,870
+files, all quickcheck-OK).
+
+**`12379642_[0-11]` (2026-07-06, with the reheader fix) — SUCCEEDED on all 12 sections.**
+Each: `[done] … BAMs = 4992`, 4992 `.bam` + 4992 `.bai`, 0 errors (vs 173–501 corrupt
+before). DLPFC UMI dedup + per-cell split is **COMPLETE**.
+
+**DEDUPED PIPELINE COMPLETE 2026-07-07 — all 12 sections ✅** (array `12389935_[0-11]`, steps
+1–8). All 12 `DLPFC_{section}_SPARCAL_normal_matrix.pkl` freshly overwritten with the deduped
+call set (mtimes Jul 7 02:57–13:53; 151674/`_9` finished last — its Stage-7 spatial filter ran
+~4h15m, not stuck). DLPFC now also emits real somatic denovo variants (e.g. 151674: germline
+denovo 31,832, somatic 38,774).
+
+**POST-DEDUP CLUSTERING BENCHMARK — pre-dedup results archived, 10× run pending (2026-07-07).**
+The benchmark now lives in `clustering_benchmark/` (was `SPATIAL_SNV/`) and is resumable (reuses
+`clustering/{modality}/run{i}/ari.txt`). The old results were **pre-dedup 5-run** (e.g. sparcal
+n_snvs 49,602), so to avoid mixing pre/post-dedup runs they were **renamed aside**:
+`data/dlpfc/clustering_benchmark` → `…_pre_dedup`, and each `data/dlpfc/{s}/clustering` →
+`clustering_pre_dedup` (all 12). All benchmark inputs verified present: sparcal (Jul-7 post-dedup),
+strelka2/gatk (unchanged), gene_expr (h5 live). **NEXT (user to run):** the germline clustering
+benchmark, 10 runs, all 4 modalities × 12 sections:
+`sbatch --array=0-11 --export=ALL,N_RUNS=10 clustering_benchmark/run_clustering.slurm`
+(a6000, cap 2 concurrent → serializes ~2 sections at a time; the slurm script auto-runs
+`make_combined_figure.py` + flock-guarded `make_ari_boxplot.py` → fresh `data/dlpfc/clustering_benchmark/`).
+Compare post-dedup ARI vs pre-dedup baseline (sparcal 0.281; gene_expr 0.404 > sparcal > gatk 0.205
+> strelka2 0.180).
 
 ---
 

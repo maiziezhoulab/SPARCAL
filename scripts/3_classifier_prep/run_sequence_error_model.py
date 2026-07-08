@@ -290,7 +290,7 @@ class SequenceErrorModel:
 
     def _extract_metrics(self, info_str: str, format_str: str, value_str: str) -> Tuple[float, int]:
         """Extract BAF and depth based on dataset format"""
-        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS"]:
+        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS", "OVAR_P5"]:
             # Extract BAF from FORMAT column
             baf_str = self.extract_format_field(format_str, value_str, "BAF")
             baf = float(baf_str) if baf_str is not None else None

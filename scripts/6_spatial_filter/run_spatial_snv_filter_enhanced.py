@@ -1521,7 +1521,7 @@ Examples:
     
     # Required arguments
     parser.add_argument('--dataset', required=True,
-                       choices=['dlpfc', 'p4_tumor', 'p6_tumor', 'dcis'],
+                       choices=['dlpfc', 'p4_tumor', 'p6_tumor', 'dcis', 'ovar_p5'],
                        help='Dataset name (case-insensitive)')
     parser.add_argument('--section_id', required=True,
                        help='Section ID (e.g., 1 for P4/P6, 151507 for DLPFC)')

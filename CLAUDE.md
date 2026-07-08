@@ -351,9 +351,17 @@ resources, and live status.**
   spots×SNVs benchmark contract is the remaining step. Details: `SpatialSNV/CLAUDE.md`,
   status: `SpatialSNV/On_going.md`.
 - **SpaceTracer** (`/data/maiziezhou_lab/leiy4/SpaceTracer/`, **outside** this repo) —
-  **NOT yet running.** Snakemake-based; env + real resources + per-sample configs still
-  to do. (A second, partial v2.0.0-CLI clone also exists at `snv_calling/SpaceTracer/` —
-  pick one.) Details/TODO: `/data/maiziezhou_lab/leiy4/SpaceTracer/CLAUDE.md`.
+  **TIME-BOXED, THEN CITE-ONLY (decision 2026-07-06).** Snakemake-based; env + resources +
+  configs are built and it runs *partway*, but ~2 weeks stagnated on a steady stream of
+  brittle-assumption bugs (`get_features`, `get_ASE.py` biallelic allele-split, hg19
+  gnomAD/dbSNP build mismatch wedging P6, downstream `identifier` KeyError). Plan: **one
+  time-boxed last attempt on a single sample (DCIS)**; if it doesn't complete end-to-end,
+  **leave as-is and cite the preprint only** (bioRxiv + Nature submission). It's an
+  *unaccepted preprint*, so the "why not compare" reviewer risk is weak/pushable — cover it
+  with an honest Methods/Limitations sentence. Do NOT resume open-ended debugging. Panel that
+  stands without it: Strelka2, GATK, Monopogen, SpatialSNV. (A second, partial v2.0.0-CLI
+  clone also exists at `snv_calling/SpaceTracer/` — pick one.) Full rationale + status:
+  `/data/maiziezhou_lab/leiy4/SpaceTracer/CLAUDE.md` (top DECISION block).
 
 ## Benchmark Results
 
