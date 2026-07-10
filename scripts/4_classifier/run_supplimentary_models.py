@@ -40,10 +40,14 @@ REFERENCE_CONFIGS = {
     }
 }       # BUGS HERE!!!
 
+# DLPFC_PREDEDUP=1 -> write to a SEPARATE tree (data/dlpfc_prededup) so the
+# post-dedup results under data/dlpfc are left untouched. Default: unchanged.
+_PREDEDUP = os.environ.get("DLPFC_PREDEDUP") == "1"
+
 DATASET_CONFIGS = {
     "DLPFC": {
         "base_path": "/data/maiziezhou_lab/Datasets/ST_datasets/DLPFC_spatialLIBD",
-        "output_dir": "data/dlpfc/{section_id}",
+        "output_dir": "data/dlpfc_prededup/{section_id}" if _PREDEDUP else "data/dlpfc/{section_id}",
         "has_sections": True,
         "reference": "DLPFC"
     },

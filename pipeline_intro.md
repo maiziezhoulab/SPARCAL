@@ -27,17 +27,7 @@ even matches the code.
   > **Paper term for (b): "Ubiquitous Private Variants (UPV)".** Chosen because it
   > encodes the *exact* filter logic — *Private* = absent from 1000G; *Ubiquitous* =
   > passed the spatial broad/uniform rule-out — without claiming a mechanism.
-  > Fallback if "Private" is undesired: "Pan-tissue variants".
-  >
-  > **Rejected: PEEV ("Putative Early-embryonic Variants").** Asserts an embryonic-
-  > mosaicism *origin* we can't support without trio data, and mislabels the
-  > likely early/truncal *tumor-clonal* somatic fraction in tumor sections — it
-  > violates the neutral-naming decision and re-collapses the set to one mechanism.
 
-  > **RENAME LATER (marked, deferred):** code tokens still read
-  > `germline_defined` / `germline_denovo` / `somatic_denovo`. Target rename →
-  > `germline` / `upv` (or `denovo_broad`) / `somatic`. `final_snv_mat.py` merges
-  > exactly these three — keep the 3-way output. Do the code rename in a later pass.
 
 - **Fixed 3 categories everywhere.** The pipeline always emits the same three,
   regardless of normal vs tumor tissue. The fact that (b) collapses to ~pure

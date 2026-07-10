@@ -7,6 +7,531 @@ Dynamically updated task list. When asked to "check ongoing tasks", Claude shoul
 
 ---
 
+## 🔶 IN PROGRESS — `defined_bin250kb` PROMOTED to all 12 DLPFC sections — job `12470671` RUNNING (resubmit of cancelled `12470146`)
+
+**Done 2026-07-10 (this session), all local/direct commands (no sbatch — reused already-completed
+step-7 output, ~30 min wall-clock):**
+1. Built the `1000G` (defined-only) matrix for the 11 sections that previously only had `normal`
+   (=germline, 1000G+UPV) — `generate_sparcal_matrices.py --dataset DLPFC --section_id {s}
+   --classes 1000G`. All 12 sections now have `data/dlpfc/{s}/matrix/
+   DLPFC_{s}_SPARCAL_1000G_matrix.pkl` (151507: 56,845 cols; range across sections 50,110–89,906).
+2. Ran `clustering_benchmark/build_binned_matrices.py --section_id {s}` (default bin sizes
+   1mb+250kb) for all 12 sections → every section now also has
+   `DLPFC_{s}_SPARCAL_defined_bin250kb_matrix.pkl` (+ `defined_bin1mb`, unused downstream but
+   free to keep).
+3. Added `defined_bin250kb` as a 5th modality in the **main** `clustering_benchmark/
+   clustering_config.json` (the all-12-section config, not the recovery-test one):
+   `{"caller": "SPARCAL", "filter": "defined_bin250kb", "grouping": ""}` — matches the
+   `DLPFC_{s}_SPARCAL_defined_bin250kb_matrix.pkl` naming exactly, no `pkl_path` override needed.
+
+**SUBMITTED 2026-07-10 — job `12470146` (`--array=0-11 --export=ALL,MODALITIES=defined_bin250kb,N_RUNS=10
+clustering_benchmark/run_clustering.slurm`).** At submit: task 0 (151507) RUNNING on gpu0208, tasks
+1–11 PENDING on `QOSGrpGRES` (a6000 2-concurrent cap; will serialize through as slots free). Existing
+4 modalities (sparcal/strelka2/gatk/gene_expr) already have 10 cached runs/section in
+`data/dlpfc/{s}/clustering/summary.csv` and are skipped — only `defined_bin250kb` computes.
+
+**Job `12470146` was accidentally cancelled by user 2026-07-10 mid-run. Checked `sacct` +
+per-section output dirs — actual state (task idx → section, per `SECTIONS=` array in
+`run_clustering.slurm`):**
+- 151507, 151508, 151509, 151510 (idx 0–3): **fully done**, all 10 runs cached.
+- 151669 (idx 4): **fully done** — all 10 runs + `summary.csv` rows present; job was killed
+  right at the tail end, after compute finished.
+- 151670 (idx 5): **partial** — run0/run1 cached; run2 killed mid-computation (empty dir, no
+  `ari.txt`); runs 3–9 never started.
+- 151671–151676 (idx 6–11): **never started** (still PENDING when cancelled), no output.
+
+**Resubmit is safe and will NOT recompute finished work** — `run_modality()` in
+`SPARCAL_clustering.py:352-353` checks each run's `ari.txt` before recomputing, so 151507–151510
++151669 skip instantly, 151670 only redoes run2 (+3–9), and 151671–151676 run fresh.
+
+**RESUBMITTED 2026-07-10 as job `12470671`** (same command as above), submitted concurrently with
+the recovery-test job `12470601` (see next section) — no conflict, disjoint output trees
+(`data/dlpfc/*/clustering/defined_bin250kb/` vs. `data/dlpfc_recovery_test/151507/clustering/`).
+Only 1 of the 12 array tasks will actually run at a time alongside `12470601` (account
+`maiziezhou_lab_acc` a6000 cap = 2 concurrent GPUs); the rest queue on `QOSGrpGRES` and serialize
+automatically as slots free up.
+
+**NEXT SESSION (after `12470671` completes): read `data/dlpfc/{s}/
+clustering/summary.csv` for every section** (`defined_bin250kb` rows) **and the regenerated
+`data/dlpfc/clustering_benchmark/ari_table.csv`. Compare 12-section mean ARI: `defined_bin250kb` vs.
+the post-dedup 10-run baselines — sparcal 0.217, gatk 0.211, strelka2 0.193, gene_expr 0.412.**
+Caveat: the 151507-only recovery-test saw defined_bin250kb 0.351 vs. defined1000G 0.277 (+0.074), but
+the 12-section `sparcal` baseline (0.217, includes UPV) is lower than the single-section
+`defined1000G` 0.277 it was benchmarked against there — open question is whether the margin holds
+section-to-section against the *actual* 12-section sparcal baseline, not just the single-section
+defined1000G one.
+
+**Open question raised by user (2026-07-10) — is binning a SPARCAL-specific win or a generic
+sparse-binary-matrix win? — GENERALIZATION DONE, ready to test on 151507.** If aggregating into 250kb
+bins helps because it recovers regional signal from per-site dropout, that logic isn't specific to
+SPARCAL's variant set — Strelka2 (58,979 SNVs) and GATK (51,553 SNVs) are also binary spot×SNV
+matrices from the same low-per-spot-coverage Visium data. Without binning them too, a
+`defined_bin250kb` win over baseline `strelka2`/`gatk` could be confounded by "binning helps any
+sparse caller" rather than "SPARCAL's variant set aggregates better."
+
+**Done this session (2026-07-10, all local/direct — no sbatch):**
+1. Generalized `clustering_benchmark/build_binned_matrices.py` — was hardcoded to read
+   `SPARCAL_1000G` and write `defined_bin{TAG}`. Now takes `--caller/--filter/--grouping` (or explicit
+   `--input`) to bin ANY `DLPFC_{s}_{caller}_{filter}[_{grouping}]_matrix.pkl`, with `--out_caller`
+   and `--out_prefix` controlling the output name. **Default invocation is byte-identical to the old
+   behavior** (verified: regenerated `SPARCAL_defined_bin250kb` equals the pre-existing pkl exactly).
+2. Built the 151507 binned matrices for the other two callers (1mb + 250kb each):
+   ```bash
+   python clustering_benchmark/build_binned_matrices.py --section_id 151507 --caller strelka2 --filter germline --grouping 6 --out_prefix ""
+   python clustering_benchmark/build_binned_matrices.py --section_id 151507 --caller gatk     --filter germline --grouping 6 --out_prefix ""
+   ```
+   → `DLPFC_151507_{strelka2,gatk}_bin250kb_matrix.pkl` (strelka2: 8,478 bins, occ 1.0%; gatk: 8,412
+   bins, occ 1.1%). Note: both are markedly sparser post-bin than SPARCAL's defined_bin250kb (8,845
+   bins, occ **3.0%**) — first hint that SPARCAL's set aggregates denser regional signal. All three
+   share the same 4,226 in-tissue barcodes.
+3. Wired 4 modalities into `clustering_config_recovery_test.json` (isolated `data/dlpfc_recovery_test`
+   tree, default `lognorm`, 5 seeds): `strelka2_raw`, `strelka2_bin250kb`, `gatk_raw`,
+   `gatk_bin250kb`. Raw + binned in the SAME tree/seeds → clean raw-vs-bin per caller, alongside the
+   already-present `defined1000G` 0.277 / `defined_bin250kb` 0.351. (Existing modalities are cached
+   and skipped — only these 4 compute.)
+
+**SUBMITTED 2026-07-10 as job `12470601`** (plain `sbatch clustering_benchmark/run_clustering_recovery_test.slurm`,
+no `RUNS`/`FORCE` override → default 5 runs/modality). Config now has 36 modalities total; 32 already
+cached and skip instantly — only the 4 new ones compute: `strelka2_raw` (in progress), `strelka2_bin250kb`,
+`gatk_raw`, `gatk_bin250kb` (18 runs total). Running on `gpu0075`, isolated output tree, no conflict with
+the concurrently-submitted `12470671` (12-section `defined_bin250kb` array job, see previous section) —
+disjoint output paths, GPU cap auto-serializes the two.
+
+**NEXT SESSION (after `12470601` completes): read `data/dlpfc_recovery_test/151507/clustering/summary.csv`
+and compare, per caller, raw→bin:
+does binning lift strelka2 (raw ~0.13) and gatk (raw ~0.17) the way it lifted defined (0.277→0.351)?
+- If **all three** callers gain similarly → binning is a generic sparse-matrix win; report
+  defined_bin250kb vs strelka2_bin250kb vs gatk_bin250kb (fair comparison), not vs raw baselines.
+- If **SPARCAL gains more** → the aggregation advantage is variant-set-specific (SPARCAL's calls tile
+  informative regions better). Either way the head-to-head is now apples-to-apples.
+Then, if binning helps, promote strelka2/gatk binning to all 12 sections: run the generalized builder
+per section and add `{caller: strelka2, filter: bin250kb, grouping: ""}` (+ gatk) to the **main**
+`clustering_config.json` (the loader drops an empty grouping → `DLPFC_{s}_strelka2_bin250kb_matrix.pkl`).
+
+---
+
+## ⏳ WATCH NOW — `defined_vaf`/`defined_rawbin` mclust NaN — ROOT-CAUSED + FIXED, 9 runs left to compute
+
+**Not yet submitted (user submits — see command below).** Step 2 of the 2026-07-10 plan (bin sweep
+done → this → promote winner to 12 sections).
+
+**Root cause found (CPU diagnostics, no sbatch needed):** STAGATE training itself is clean — zero
+NaN through 60 epochs, loss converges smoothly. The failure is downstream: on these two matrices
+(`preprocess="none"`, ultra-sparse raw alt-evidence, mean nonzero rate 0.28%) the 30-d STAGATE
+embedding doesn't have enough independent signal to fill 30 dimensions, so most collapse toward
+near-zero variance — **rank 6/30 at epoch 60, and confirmed by a full production-path rerun to keep
+collapsing further to rank 2/30 by epoch 1000** (covariance condition number ~1.7e7 already at epoch
+60). Fitting a full 30-d Gaussian-mixture covariance (`mclust`'s `"EEE"` model + its fallback model
+search, which includes unconstrained per-cluster `VVV`) to that is both statistically meaningless
+along the dead dimensions and numerically fatal — R's internal SVD eventually hits an exactly
+singular matrix: `Error in svd(shape.o, nu=0): infinite or missing values in 'x'`.
+
+**Fix applied:** `clustering_benchmark/SPARCAL_clustering.py:mclust_R` now projects the embedding
+onto its informative PCA subspace (eigenvalue > 1e-6 × the largest) before calling `Mclust`. Verified
+three ways: (1) synthetic pathological embedding → fix succeeds where a hand-rolled repro of the old
+path was inconclusive (didn't itself crash — real per-cluster singularity needs real spatially
+imbalanced data, not a synthetic unimodal blob); (2) **zero regression** — replayed the fix against
+the cached `defined_bin250kb` run0 embedding, got byte-identical cluster labels and ARI (0.384924);
+(3) **real end-to-end confirmation** — reran `defined_vaf` run0 through the actual production code
+path (CPU, full 1000 epochs): printed `embedding rank 2/30 (dropping 28 near-zero-variance dims)`
+and completed with **ARI = 0.1588** where it previously crashed on all 5/5 seeds. Low ARI is expected
+(severely rank-collapsed representation), not a concern — the point was completion, not quality.
+
+**Remaining work:** only `defined_vaf` run0 is cached (`ari.txt` exists on disk); the other 9 runs
+(`defined_vaf` runs 1–4, `defined_rawbin` runs 0–4) have no `ari.txt` yet, so caching will recompute
+them automatically — now through the fixed `mclust_R`, on GPU (fast, unlike my CPU validation).
+
+**USER SUBMITS (Claude does not sbatch) — from repo root:**
+```bash
+sbatch clustering_benchmark/run_clustering_recovery_test.slurm
+```
+Then read `data/dlpfc_recovery_test/151507/clustering/summary.csv`: all 10 `defined_vaf`/
+`defined_rawbin` rows should now have real ARI values (no more `status` error text). Compare their
+5-seed means vs `defined1000G` **0.277** and `defined_bin250kb` **0.351** — expect both to underperform
+given the rank collapse (repo prior: "expect vaf≈rawbin" since VAF is nearly binary already). **Then:**
+promote `defined_bin250kb` to all 12 DLPFC sections (the last item from the 2026-07-10 plan).
+
+---
+
+## ✅ DONE — DLPFC bin-size sweep — CONFIRMED: `defined_bin250kb` is the peak
+
+**Completed 2026-07-10 07:06 (job exit 0).** Plan agreed with user 2026-07-10: (1) bin-size sweep
+first, (2) root-cause the `defined_vaf`/`defined_rawbin` mclust NaN failure, (3) promote the winner
+to all 12 DLPFC sections. Step 1 is done; **step 2 (NaN root-cause) is now next.**
+
+5 new bin sizes (500kb/125kb/100kb/50kb/25kb) clustered cleanly (5 seeds each, all `status=ok`,
+correct 4221-spot shape). Result, vs `defined1000G` baseline **0.277**:
+
+| bin size | bins | mean SNV/bin | ARI (5-seed mean ± std) |
+|---|---|---|---|
+| 1mb | 2,695 | 21.1 | 0.277 ± 0.057 |
+| 500kb | 5,061 | 11.2 | 0.246 ± 0.044 |
+| **250kb** | **8,845** | **6.4** | **0.351 ± 0.059 ← peak** |
+| 125kb | 14,076 | 4.0 | 0.310 ± 0.064 |
+| 100kb | 16,027 | 3.5 | 0.303 ± 0.039 |
+| 50kb | 22,252 | 2.6 | 0.263 ± 0.026 |
+| 25kb | 27,993 | 2.0 | 0.244 ± 0.037 |
+
+**Conclusion:** 250kb is a genuine local peak, not a fluke. Fine side is a clean monotone decay
+(125kb→25kb) as bins shrink toward single-SNV resolution and lose the aggregation benefit. Coarse
+side dips at 500kb (0.246, below even 1mb) — likely seed noise (one of 5 seeds landed at 0.174; the
+other four average ~0.264) rather than real non-monotonicity, but both coarse points sit well below
+250kb regardless. **No further bin-size sweeping needed — `defined_bin250kb` stands as the winner.**
+
+**Next: root-cause `defined_vaf`/`defined_rawbin`** (see DONE entry below for the `Mclust`/`svd` NaN
+error — not yet instrumented/confirmed; hypothesis is a NaN STAGATE embedding under
+`preprocess="none"` on these two very-sparse raw-alt-evidence matrices). **Then:** promote
+`defined_bin250kb` to all 12 DLPFC sections (151507 alone is not yet paper-ready). Also queued from
+discussion: a controlled `floor20 ∘ bin250kb` modality (does floor-filtering before binning sharpen
+or starve the aggregate signal?) — run as one modality against `defined_bin250kb` once priorities
+allow, not folded into other sweeps.
+
+---
+
+## ✅ DONE — DLPFC SNV-selection/representation clustering — job `12454721` — WINNER FOUND: `defined_bin250kb` 0.351
+
+**Completed** 2026-07-10T00:04:29 (started 22:32:09, elapsed 1h32m — well under the 2–4h estimate,
+8h limit). Exit code 0. Recovery-test harness on **section 151507 only**, all **27 modalities × 5
+seeds = 135 runs** present in `data/dlpfc_recovery_test/151507/clustering/summary.csv`; 125 succeeded,
+**2 modalities (`defined_vaf`, `defined_rawbin`) failed all 5/5 seeds** with an R error from mclust:
+`Error in svd(shape.o, nu = 0) : infinite or missing values in 'x'` (visible in `run.err`/`run.out`,
+rows written as `ari=NaN`) — likely a degenerate/near-constant embedding for these two representations;
+not yet root-caused, no other modality hit it.
+
+**Final means (5-seed avg), sorted, vs. baselines defined1000G 0.277 / gene_expr 0.412:**
+
+| modality | ARI | vs. baseline |
+|---|---|---|
+| **`defined_bin250kb`** | **0.351** | **BEATS baseline by +0.074** — best of the run |
+| `defined_floor05` | 0.286 | slightly above |
+| `orig49k` (cached) | 0.278 | ≈ baseline |
+| `defined1000G` (cached, baseline) | 0.277 | — |
+| `defined_bin1mb` | 0.277 | ≈ baseline (predicted neutral — confirmed) |
+| `defined_floor20` | 0.277 | ≈ baseline |
+| `defined_upvrule` | 0.263 | below (confirms prior: UPV rule-based subset hurts) |
+| `defined_floor03` | 0.259 | below |
+| `defined_floor02` | 0.253 | below |
+| `defined_somatic` (cached) | 0.245 | below (confirms: adding somatic hurts) |
+| `defined_floor50` | 0.240 | below |
+| `defined_floor10` | 0.223 | below |
+| `defined_somtop02/05/10/25` | 0.198 / 0.190 / 0.186 / 0.181 | below, monotone with tightening (predicted) |
+| `defined_tfidf` | 0.186 | below (predicted ↓ — confirmed) |
+| `defined_cap30` | 0.156 | below |
+| `defined_svg20k` | 0.148 | below |
+| `defined_cap20/02/10`, `defined_svg10k/05k` | 0.11–0.12 | below (predicted ↓ — confirmed) |
+| `defined_vaf`, `defined_rawbin` | **FAILED (NaN)** | mclust svd error, inconclusive |
+
+**Takeaways:** (1) `defined_bin250kb` (250kb genomic binning of the defined/1000G SNV set, 8,845
+features) is the standout winner — meaningfully closes the gap to the gene_expr upper reference
+(0.412) without leaving the SNV-only regime. `defined_bin1mb` (2,695 features) is only neutral, so
+250kb is the better bin size, not "coarser is better." (2) Every other prior was confirmed: capping,
+SVG-selection, tf-idf, somatic/UPV augmentation, and top-%-somatic all hurt; floor-filtering is
+roughly neutral-to-slightly-positive at floor02–floor20 and degrades by floor50.
+
+**Next steps (not yet done):** (1) root-cause the `defined_vaf`/`defined_rawbin` mclust svd failure
+(check for constant/degenerate features feeding STAGATE) and rerun those two. (2) Per the original
+plan, promote `defined_bin250kb` to all 12 DLPFC sections before it goes in the paper — this single
+151507 result is not yet a paper-ready claim. (3) No auto-aggregate/boxplot exists for the
+recovery-test tree (`make_ari_boxplot.py` targets `data/dlpfc` — do not point it here, it would
+clobber the post-dedup benchmark); any figure needs a new path. Full context: memory
+[[project_dlpfc_snv_representation_study]] + [[project_dlpfc_ari_regression_codedrift]].
+
+---
+
+## 2026-07-09 (PM) — Q1 ANSWERED (adding somatic HURTS) + Q2 "clean the defined set" SET UP
+
+**Q1 — "does adding the pipeline's focal/spatially-clustered SOMATIC denovo variants to the
+defined set improve clustering?" → NO, it HURTS.** Read `data/dlpfc_recovery_test/151507/
+clustering/summary.csv` (job `12453071`, 5 seeds each):
+
+| modality | matrix | mean ARI (5 seeds) |
+|----------|--------|--------------------|
+| orig49k | real 0.28 matrix, 49,602 | **0.278** |
+| defined1000G | defined-only, 56,845 | **0.277** |
+| **defined_somatic** | defined ∪ ~13k focal denovo, 70,264 | **0.245** ↓ |
+
+Adding the ~13k "somatic" denovo columns drops ARI 0.277 → 0.245. Interpretation: DLPFC
+"somatic" is only top-10% denovo by `spatial_clustering` (no CalicoST clone/CNV features on
+normal tissue), so in normal cortex these are just moderately-clustered denovo noise with no
+real clonal structure → they add columns without layer signal. **Confirms: for the DLPFC
+positive control, the best matrix is defined/1kG-only; do NOT fold denovo (somatic OR UPV) in.**
+
+**Q2 — "does DROPPING the uniformly/densely distributed variants from the DEFINED set beat
+0.277?" → BUILT + WIRED, awaiting cluster run.** Tests the handoff hypothesis that it's the
+DENSITY/UNIFORMITY axis (not denovo-ness) that hurts. `clustering_benchmark/
+build_defined_clean_matrices.py` (ran directly, fast) loads `DLPFC_151507_SPARCAL_1000G_matrix.pkl`
+(4226×56,845), computes per-column prevalence + the pipeline's exact spatial-uniformity alpha,
+and writes cleaned copies (same rows/values, fewer columns) to `data/dlpfc/151507/matrix/`:
+
+| modality | rule | cols kept (dropped) |
+|----------|------|---------------------|
+| defined_cap30 | drop prev > 30% | 56,628 (−217) |
+| defined_cap20 | drop prev > 20% | 56,458 (−387) |
+| defined_cap10 | drop prev > 10% | 55,920 (−925) |
+| defined_cap05 | drop prev > 5% | 54,672 (−2,173) |
+| defined_cap02 | drop prev > 2% | 51,148 (−5,697) |
+| defined_upvrule | pipeline UPV rule: alpha>0.5 & beta>0.2 | 54,927 (−1,918) |
+
+Basis caveat: prevalence/alpha computed on the matrix itself (post-smoothing), the exact data
+STAGATE sees — slightly higher prev than the pipeline's raw-`vcf_by_spot` basis; noted. Defined
+median prev is 0.26% (mean 1.08%) with a heavy tail up to 94% — the caps bite only that tail.
+Per-column scores saved: `data/dlpfc/151507/matrix/DLPFC_151507_SPARCAL_defined_clean_scores.tsv`.
+The 6 pkls are added as modalities in `clustering_config_recovery_test.json` (clustering is
+cached — the 3 existing modalities won't recompute).
+
+**USER SUBMITS (Claude does not sbatch) — from repo root:**
+```bash
+sbatch clustering_benchmark/run_clustering_recovery_test.slurm    # computes only the 6 new modalities × 5 seeds
+```
+Then read `data/dlpfc_recovery_test/151507/clustering/summary.csv`: compare each `defined_cap*`/
+`defined_upvrule` mean vs **defined1000G 0.277**. **Hypothesis: defined_clean > 0.277 ⇒ density
+is the harmful axis ⇒ a general GT-free "drop dense/uniform SNVs" rule.** If even the aggressive
+cap02 (−5,697) doesn't beat 0.277, density within the defined set is NOT the lever.
+
+**Q2 RESULT — DONE (job 12453703), HYPOTHESIS REFUTED. Density is SIGNAL, not noise.** Dropping dense
+defined variants does the OPPOSITE of help — it CRASHES ARI (matrices confirmed correct size, 4221
+spots, 30-d emb): defined1000G **0.277** | cap30 (−217, prev>30%) **0.156** | cap20 (−387) 0.124 |
+cap10 (−925) 0.111 | cap05 (−2,173) 0.117 | cap02 (−5,697) 0.123 | upvrule (−1,918, α>0.5&β>0.2) 0.263.
+Removing just the **217 highest-prevalence** defined variants halves ARI ⇒ the dense/high-prevalence
+defined variants are **load-bearing**: they carry the aggregate per-spot-coverage signal (cortical
+layers differ in cellularity → coverage → detection), matching the Moran's-I finding that defined
+variants cluster via AGGREGATE coverage. **The "drop dense/uniform SNVs" rule is DEAD for the defined
+set.** Reconciles with UPV/somatic: harm there is *adding* flat denovo columns (dilution), not density
+per se. **defined1000G 0.277 stands as the SNV-binary ceiling.**
+
+**⇒ Revised priors for Q4 representation study:** TF-IDF *down-weights* common variants → now predicted
+to HURT (suppresses the signal); binning (aggregates) → help/neutral; SVG-select (keeps high-Moran's-I,
+discards the aggregate) → hurt.
+
+**Q2b — LOW-prevalence FLOOR sweep (user's mirror idea) — BUILT + WIRED.** Since capping HIGH prevalence
+crashed ARI, test the opposite: drop ultra-rare variants (the standard scanpy/ATAC `min_cells` filter —
+a variant in 1 spot can't carry reproducible spatial signal). `clustering_benchmark/
+build_defined_floor_matrices.py` keeps variants present in ≥N spots:
+
+| modality | keep | dropped (present in <N spots) |
+|----------|------|-------------------------------|
+| defined_floor02 | 53,026 | 3,819 singletons (0.1% of detections) |
+| defined_floor03 | 48,664 | 8,181 |
+| defined_floor05 | 41,636 | 15,209 |
+| defined_floor10 | 30,427 | 26,418 |
+| defined_floor20 | 19,998 | 36,847 |
+| defined_floor50 | 9,518 | 47,327 |
+
+Added to `clustering_config_recovery_test.json` (now **27 modalities**). Prediction: floor02/03 (drop
+singletons/doubletons, negligible aggregate mass) neutral-to-slightly-helpful (denoise + shrink);
+aggressive floors (10/20/50) likely HURT if the aggregate-coverage signal is spread across many rare
+variants (same mechanism as the cap crash). The floor02–floor50 curve maps exactly how much of the
+signal lives in the rare tail.
+
+**Q3 — somatic step-sweep (user's idea) — BUILT + WIRED.** Q1 added the FULL somatic set (top-10%
+denovo by votes) and it hurt (0.245). But on DLPFC ~half that set has `f_spatial_clustering`=0 (not
+actually clustered — purity/clone/cnv vote features are NA on normal tissue). So TIGHTEN the somatic
+filter: keep only the top-X% MOST spatially-clustered somatic, union with defined, and see if a
+smaller focal set recovers toward/above 0.277. `clustering_benchmark/build_somatic_sweep_matrices.py`
+ranks the 13,419 somatic by `f_spatial_clustering` (med 0.0, max 0.167) and writes defined ∪ top-f:
+
+| modality | somatic kept (top-f) | total cols |
+|----------|----------------------|------------|
+| defined_somtop25 | 3,355 | 60,200 |
+| defined_somtop10 | 1,342 | 58,187 |
+| defined_somtop05 | 671 | 57,516 |
+| defined_somtop02 | 268 | 57,113 |
+
+Added as modalities in `clustering_config_recovery_test.json` (now 13 total).
+
+**SUBMIT ORDER (important — avoid a summary.csv write race):** the defined-clean job `12453703` is
+STILL RUNNING (read the config at launch → won't pick up the 4 somtop modalities). Submit the
+somatic sweep **AFTER 12453703 finishes**; caching then computes ONLY the 4 new somtop modalities
+and merges cleanly:
+```bash
+sbatch clustering_benchmark/run_clustering_recovery_test.slurm   # after 12453703 done → computes the 4 somtop × 5 seeds
+```
+Read `data/dlpfc_recovery_test/151507/clustering/summary.csv`: compare each `defined_somtop*` mean
+vs defined1000G **0.277** and defined_somatic **0.245**. Expectation: monotone recovery toward 0.277
+as f shrinks; if even somtop02 stays < 0.277, no somatic subset helps the DLPFC positive control
+(consistent with normal tissue having no real clonal/somatic structure).
+
+**Q4 — SNV representation/feature-selection study (lit-review-driven, user asked, all GT-free) — BUILT
++ WIRED.** Insight from the review: our matrix is binary + ultra-sparse = the **scATAC-seq** problem,
+and this is the **spatially-variable-feature selection** problem. Two literatures apply directly:
+(1) binary-data representation → **TF-IDF/LSI** (scATAC standard; up-weight rare, down-weight common —
+our `normalize_total+log1p` is a mismatched count model); (2) SVG benchmark (Genome Biology 2023/2025):
+**SVG selection beats HVG for clustering, Moran's I is best & sparse-robust** — but must DECOUPLE
+structure from prevalence (raw Moran's I rewards ubiquitous variants; that was the earlier "dead end").
+Four experiments, each a modality on the defined matrix (build scripts in `clustering_benchmark/`):
+
+| exp | modality(ies) | what | build script |
+|-----|---------------|------|--------------|
+| A | `defined_tfidf` | TF-IDF preprocess (reuses 1000G pkl, `preprocess:"tfidf"`) | code: SPARCAL_clustering.py |
+| B | `defined_svg05k/10k/20k` | prevalence-cap 10% → top-K by Moran's I (5k/10k/20k) | build_svg_matrices.py |
+| C | `defined_bin1mb` (2,695 bins) / `defined_bin250kb` (8,845) | genomic binning, count/bin/spot | build_binned_matrices.py |
+| D | `defined_vaf` vs `defined_rawbin` | graded VAF vs matched binary, `preprocess:"none"` | build_vaf_matrix.py |
+
+Code: added an **opt-in `preprocess` field** to `SPARCAL_clustering.py:load_snv_section`
+(`lognorm` default = unchanged; `tfidf` = Signac RunTFIDF scale 1e4; `none` = pass-through). All
+existing modalities are byte-identical (default) so caching holds. TF-IDF verified correct (rare cols
+up-weighted 4.77 > 3.14 common). B: Moran's I on capped defined has median≈0, only 239 vars I>0.05
+(defined variants are individually unstructured → cluster via AGGREGATE coverage; svg20k min-I≈0 is
+already noise — tests the aggregate hypothesis). **D caveat:** mean VAF of detected entries = 0.974
+(Visium per-spot depth → almost all detected SNVs have 0 ref reads → VAF≈1), so `defined_vaf` is
+nearly binary; expect vaf≈rawbin. Config `clustering_config_recovery_test.json` now has **21
+modalities**; py_compile clean, all pkls present, no stray keys in the loop.
+
+**SUBMIT (after 12453703 finishes — same write-race reason; caching computes only the uncomputed):**
+```bash
+sbatch clustering_benchmark/run_clustering_recovery_test.slurm   # computes 4 somtop + 8 A/B/C/D = 12 new × 5 seeds = 60 runs
+```
+60 runs × ~1–3 min on a6000 ≈ 1–3 h (4h slurm limit; resumable — if it times out just resubmit, cached
+runs skip). Then read `summary.csv` and compare every new modality vs **defined1000G 0.277** (and
+gene_expr **0.412** as the upper reference). Priors: A (tfidf) is the most likely to beat 0.277; C (bin)
+tests the aggregate-coverage hypothesis; B (svg) likely ≤0.277 if aggregate coverage is the mechanism;
+D likely ties rawbin. **NOTE:** these all cluster on 151507 only — promote any winner to all 12 sections
+before it goes in the paper.
+
+---
+
+## 2026-07-09 — DLPFC ARI regression RESOLVED (= UPV inclusion, not dedup) + denovo A/B in progress
+
+**Full analysis + evidence in memory:** `project_dlpfc_ari_regression_codedrift.md` and
+(corrected) `project_umi_dedup_ablation_finding.md`. Summary for the next session:
+
+**RESOLVED — the 0.28→0.21 DLPFC clustering drop is CODE DRIFT, not UMI dedup.** The July
+`generate_sparcal_matrices.py` builds the "normal"/germline matrix as defined+denovo, folding
+in **UPV** (germline-denovo, ~4k dense/uniform columns). UPV are *worse than useless* for layer
+clustering. Proof (recovery A/B, job `12450060`, isolated tree `data/dlpfc_recovery_test/151507`,
+5 runs seeds 0-4):
+- `orig49k` (real 0.28 matrix `temp/snv_matrix.pkl`, 49,602) → **0.278** (reproduces archived 0.288)
+- `defined1000G` (current post-dedup, **UPV dropped**, 56,845) → **0.277** (full recovery)
+- full germline WITH upv (60,804) → **0.177** (the regressed value)
+- Dedup itself is ARI-neutral (same-code post 0.214 vs pre 0.204; 97.4% identical columns).
+- **Paper fix: build the DLPFC clustering matrix as `--classes 1000G` (defined-only), no UPV.**
+
+**A/B harness (reusable) — `clustering_benchmark/`:**
+- `SPARCAL_clustering.py` now honors a `pkl_path` override in a modality config (cluster any pkl).
+- `clustering_config_recovery_test.json` (modalities: orig49k, defined1000G, defined_somatic) +
+  `run_clustering_recovery_test.slurm` (a6000 GPU, output isolated → `data/dlpfc_recovery_test/`,
+  NEVER touches the protected `data/dlpfc/{s}/clustering{,_pre_dedup}` baselines). Runs are cached,
+  so resubmitting only computes new modalities.
+
+**Moran's I selection = DEAD END** (`denovo_spatial_analysis.py`, job `12452133`, outputs
+`data/dlpfc/151507/denovo_spatial/baseQ0mapQ0/`): per-variant spatial autocorrelation INVERTS —
+defined (helps) median I≈0, UPV (hurts) highest (+0.031), because `classify_variants` Stage-1
+*defines* UPV as denovo with alpha(spatial_uniformity)>0.5 AND beta(global_prevalence)>0.2. So don't
+select denovo by Moran's I. DLPFC caveat: Stage-2 somatic-vs-ambiguous votes on purity/clone/cnv
+features that are **NA without CalicoST**, so DLPFC `somatic` = top-10% denovo by spatial_clustering.
+
+**`defined + somatic` A/B — FINISHED (job `12453071`), NOT YET READ.** Matrix built by
+`clustering_benchmark/build_defined_somatic_matrix.py` → `data/dlpfc/151507/matrix/
+DLPFC_151507_SPARCAL_defined_somatic_matrix.pkl` (defined1000G ∪ ~13k focal denovo). Clustered as
+modality `defined_somatic`. **NEXT SESSION: read `data/dlpfc_recovery_test/151507/clustering/summary.csv`**,
+compare `defined_somatic` mean vs `defined1000G` **0.277** (does focal denovo add signal?) and vs
+full-germline **0.177**. (Ambiguous, 120k cols, dropped — too large / ill-defined for DLPFC.)
+
+**NEXT APPROACH (user's idea, agreed) — prevalence-cap "clean the defined set" experiment (GT-FREE):**
+Run the DEFINED set through the UPV rule and remove defined variants that satisfy it, to test whether
+it's DENSITY/UNIFORMITY (not denovo-ness) that hurts. Both scores are GT-free
+(`calculate_spatial_uniformity_score` = CV of carrying-spot pairwise distances; `calculate_global_prevalence_score`
+= spots_with/total). Plan: score every defined variant's alpha/beta from raw spot detection
+(`output_VCFs/spotprofiles/{qf}/vcf_by_spot/`), build `defined_clean` matrices at the hard UPV
+threshold (alpha>0.5 & beta>0.2) AND a **prevalence-cap sweep** (drop defined with prev >0.3/0.2/0.1/0.05
+— needed because defined median prev is only 0.26%, so the hard threshold may flag too few to move ARI),
+add as recovery-test modalities, cluster vs 0.277. Hypothesis: `defined_clean` **> 0.277** ⇒ density is
+the harmful axis ⇒ a general, transferable "drop dense/uniform SNVs" rule.
+
+**GT design justification (settled this session):** GT (cortical-layer labels) is an EVALUATION
+yardstick ONLY (ARI at the very end) — never a pipeline input or SNV-selection criterion. Clustering
+is unsupervised; DLPFC is a POSITIVE CONTROL that validates the method for the no-GT tumor datasets.
+**Bright line: every SNV filter must be GT-free** (prevalence, spatial uniformity, Moran's I, quality)
+so it transfers. Selecting SNVs by correlation with layers (Fisher-vs-layer, cross-layer variance) is
+CIRCULAR/forbidden as a method (oracle-only). The prevalence-cap experiment is correctly GT-free.
+
+---
+
+## 2026-07-08 — SpaceTracer gnomAD/dbSNP reference fix + DCIS1 time-boxed submission
+
+**FIXED:** gnomAD v2.1 / dbSNP 138 (hg19) reference allele mismatch in SpaceTracer's `prior` rule. Job 12351949 (P6) was stagnated for 3+ days repeating the error; root cause was non-fatal coordinate/build incompatibility. Changed `logging.error` → `logging.debug` in `/data/maiziezhou_lab/leiy4/SpaceTracer/module/read_file.py:416`.
+
+**SUBMITTED:** SpaceTracer DCIS1 end-to-end test via `/data/maiziezhou_lab/leiy4/SpaceTracer/run_sample.sh` — **job 12417865** (2026-07-08 10:15 AM). Single time-boxed attempt per 2026-07-06 decision (if successful → benchmark; if fails → cite preprint only). Monitoring log: `tail -f /data/maiziezhou_lab/leiy4/SpaceTracer/runs/slurm_output/spacetracer_12417865.err`.
+
+---
+
+## 2026-07-08 — DLPFC PRE-DEDUP regeneration for a fair 10-run clustering comparison (SET UP, ready to submit)
+
+**Why:** the post-dedup clustering benchmark (10-run) finished (sparcal mean ARI **0.217**), but
+the pre-dedup baseline was only **5-run** (0.281) AND its SPARCAL matrices were overwritten in place
+by the 2026-07-07 dedup rerun (data/dlpfc/{s}/matrix now = deduped 60,804-col; the 49,602-col
+pre-dedup version is gone; spatial_filter_purity also clobbered). To compare fairly (10 vs 10) we must
+**regenerate the pre-dedup SPARCAL matrices** then run 10× sparcal clustering. User decision (2026-07-08):
+**regenerate + 10× rerun, and DO NOT overwrite the post-dedup results.**
+
+**Non-destructive design — env flag `DLPFC_PREDEDUP=1`.** Added a backward-compatible flag to all 8
+pipeline scripts (steps 1–8) that flips ONLY the DLPFC paths: BAMs ← the read-only ORIGINAL non-dedup
+source `/data/maiziezhou_lab/Datasets/ST_datasets/DLPFC_spatialLIBD/{section}/bam_bycell/*.bam`
+(confirmed present, 4992/section × 12), output → **`data/dlpfc_prededup/{section}`**. Default (unset) =
+unchanged → post-dedup `data/dlpfc` is never touched. Verified: all 8 compile; path resolution correct
+both ways; dataset name stays `DLPFC` so every format branch still fires (no OVAR_P5-style gap).
+Files: steps 1/6 override bam_base_path+bam_pattern+output_dir; steps 2–5 output_dir; step 7 output_base;
+step 8 DATASET_OUTPUT_BASE. New runner **`run_slurm/dlpfc/run_pipeline_DLPFC_prededup.sh`** (array 0-11,
+exports the flag, resumable START_STEP).
+
+**Clustering phase:** new `clustering_benchmark/clustering_config_prededup.json` (sparcal only, both
+paths → data/dlpfc_prededup) + runner `clustering_benchmark/run_clustering_prededup.slurm` (10 runs,
+sparcal only, writes to data/dlpfc_prededup/{s}/clustering; deliberately SKIPS make_ari_boxplot.py /
+make_combined_figure.py because those default to data/dlpfc and would clobber the post-dedup aggregate).
+
+**SUBMIT (from repo root; user submits — Claude does not sbatch):**
+1. **`bash run_slurm/dlpfc/run_pipeline_DLPFC_prededup.sh` — SUBMITTED 2026-07-08, job `12413536`
+   (array 0-11).** At submit: tasks 0–3 (151507–151510) RUNNING on cn1801/cn1804/cn1812, tasks 4–11
+   PENDING on `QOSGrpCpuLimit` (CPU-quota queue; start as running ones free). Steps 1–8 → data/dlpfc_prededup
+   (long: mpileup ~hours/section). **VERIFY per section when done:** matrix
+   `data/dlpfc_prededup/{s}/matrix/DLPFC_{s}_SPARCAL_normal_matrix.pkl` exists with col count ≈ the
+   pre-dedup 49,602 scale (NOT the deduped 60,804), and data/dlpfc/{s} mtimes are UNCHANGED (Jul-7).
+2. after (1): `sbatch --array=0-11 clustering_benchmark/run_clustering_prededup.slurm`   # 10× sparcal
+3. after (2): aggregate `data/dlpfc_prededup/*/clustering/summary.csv` vs post-dedup
+   `data/dlpfc/*/clustering/summary.csv` for the 10-vs-10 sparcal comparison.
+
+**Post-dedup 10-run baseline to compare against (means):** gene_expr 0.412 · **sparcal 0.217** ·
+gatk 0.211 · strelka2 0.193 (gatk/strelka2 over 11 sections — 151671 mclust svd failure).
+
+---
+
+## 2026-07-09 — pre-dedup regen CHECKED: 11/12 done, matrix col-count anomaly, user picked "5+5" mix
+
+**Pipeline `12413536` status:** 11/12 sections COMPLETE (151507–151675). Task 11 (151676) still on
+Stage 1 (mpileup), started ~03:25, other sections took 5–12h for the full 8-stage chain — check back later.
+
+**Anomaly found:** regenerated matrices do NOT match the expected ≈49,602-col (old pre-dedup) scale —
+they're bigger and inconsistent across sections, e.g. 151507 61,837 · 151671 72,847 · 151674 110,127
+(row/spot counts DO match the old archive exactly, e.g. 4226 for 151507 — only the SNV/column axis
+differs). Likely cause: **unseeded `np.random.choice` training subsample** in
+`scripts/4_classifier/run_supplimentary_models.py:772` — reruns on identical BAMs are not
+deterministic, so "regenerate the pre-dedup matrix" does not reproduce the original 49,602-col set.
+
+**User decision (2026-07-09): combine anyway — "5+5" mix, NOT a clean 10-run.** Keep the existing
+archived **run0–4** at `data/dlpfc/{s}/clustering_pre_dedup/sparcal/run{0-4}/` (computed on the
+now-deleted original 49,602-col matrix) as-is, and add **5 NEW runs (run5–9)** computed on the
+freshly regenerated `data/dlpfc_prededup/{s}/matrix/...` matrix. The resulting "10-run" pre-dedup
+box entry will therefore mix ARI values from two different underlying variant sets, not just
+mclust-seed randomness — flagged as a caveat for the paper if this number is reported.
+
+**Command for the user to submit (once section 151676's matrix is ready — currently task 11 of
+`12413536` is still running):**
+```bash
+sbatch --array=0-11 --export=ALL,RUNS=5,6,7,8,9 clustering_benchmark/run_clustering_prededup.slurm
+```
+Writes `data/dlpfc_prededup/{s}/clustering/sparcal/run{5..9}/` + merges into
+`data/dlpfc_prededup/{s}/clustering/summary.csv` (resumable — safe to resubmit, only recomputes
+missing runs). If 151676 isn't ready yet, sections 0–10 can be submitted now
+(`--array=0-10`) and 11 appended later (`--array=11 ...`).
+
+**After that finishes:** aggregate old run0–4 (`data/dlpfc/{s}/clustering_pre_dedup/sparcal/run{0-4}/ari.txt`)
++ new run5–9 (`data/dlpfc_prededup/{s}/clustering/sparcal/run{5-9}/ari.txt`) into one combined ARI
+box plot, written to a **new** location (not overwriting `data/dlpfc/clustering_benchmark_pre_dedup/`
+or the post-dedup `data/dlpfc/clustering_benchmark/`) — planned output dir:
+`data/dlpfc_prededup/clustering_benchmark_combined/`.
+
+---
+
 ## 2026-07-07 — OVAR_P5: step-3 fix VERIFIED healthy; NEW `1000G=0` matrix anomaly (runner --exclude_vcf)
 
 **Chain `12390112..117` COMPLETED — the step-3 `extract_metrics` fix worked, all previously-zero

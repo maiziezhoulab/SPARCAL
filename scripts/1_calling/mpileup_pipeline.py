@@ -52,6 +52,11 @@ REFERENCE_CONFIGS = {
     }
 }
 
+# Opt-in flag to REGENERATE the pre-dedup DLPFC call set from the ORIGINAL
+# non-dedup per-cell BAMs into a SEPARATE tree (data/dlpfc_prededup), leaving the
+# post-dedup results under data/dlpfc untouched. Enable with env DLPFC_PREDEDUP=1.
+_PREDEDUP = os.environ.get("DLPFC_PREDEDUP") == "1"
+
 # Dataset Configurations
 # Dataset Configurations
 DATASET_CONFIGS = {
@@ -61,9 +66,10 @@ DATASET_CONFIGS = {
         # bam_base_path repoints ONLY the BAM glob to the project dir; base_path above
         # stays the read-only dataset for spatial/position files.
         # Non-dedup source (rollback): base_path/{section_id}/bam_bycell/*.bam
-        "bam_base_path": "/data/maiziezhou_lab/leiy4/snv_calling",
-        "bam_pattern": "data/dlpfc/{section_id}/bam_bycell_dedup/*.bam",
-        "output_dir": "data/dlpfc/{section_id}",
+        # DLPFC_PREDEDUP=1 -> read the ORIGINAL non-dedup BAMs + write to data/dlpfc_prededup.
+        "bam_base_path": "/data/maiziezhou_lab/Datasets/ST_datasets/DLPFC_spatialLIBD" if _PREDEDUP else "/data/maiziezhou_lab/leiy4/snv_calling",
+        "bam_pattern": "{section_id}/bam_bycell/*.bam" if _PREDEDUP else "data/dlpfc/{section_id}/bam_bycell_dedup/*.bam",
+        "output_dir": "data/dlpfc_prededup/{section_id}" if _PREDEDUP else "data/dlpfc/{section_id}",
         "has_sections": True,
         "reference": "DLPFC",
         "multiple_bams": True,

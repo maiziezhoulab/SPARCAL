@@ -43,8 +43,11 @@ import pandas as pd
 # Per-dataset pipeline output roots (case-sensitive: data/P6_tumor != data/p6_tumor).
 # Kept in sync with run_spatial_snv_filter_enhanced.py "output_base".
 PROJECT_BASE_DIR = "/data/maiziezhou_lab/leiy4/snv_calling"
+# DLPFC_PREDEDUP=1 -> read the pre-dedup tree (data/dlpfc_prededup) so the
+# post-dedup matrices under data/dlpfc are left untouched. Default: unchanged.
+_PREDEDUP = os.environ.get("DLPFC_PREDEDUP") == "1"
 DATASET_OUTPUT_BASE = {
-    "DLPFC":    "data/dlpfc",
+    "DLPFC":    "data/dlpfc_prededup" if _PREDEDUP else "data/dlpfc",
     "P4_TUMOR": "data/P4_tumor",
     "P6_TUMOR": "data/P6_tumor",
     "DCIS":     "data",        # section_id already carries the "dcis1"/"dcis2" prefix
@@ -57,6 +60,7 @@ DATASET_OUTPUT_BASE = {
 # datasets like DLPFC — it is the direct successor of the old bcftools "normal".
 CLASS_SPECS = {
     "1000G":    ("germline", "defined"),
+    "UPV":      ("germline", "denovo"),
     "germline": ("germline", None),
     "normal":   ("germline", None),
     "somatic":  ("somatic",  None),
@@ -154,6 +158,7 @@ def main():
     # Load the two source dirs once (germline carries the race split; somatic is all denovo).
     print(f"Reading per-barcode SNVs from {sf_root}")
     germline_defined = load_category(os.path.join(sf_root, "germline"), "defined")
+    germline_denovo  = load_category(os.path.join(sf_root, "germline"), "denovo")
     germline_all     = load_category(os.path.join(sf_root, "germline"), None)
     somatic_all      = load_category(os.path.join(sf_root, "somatic"),  None)
 
@@ -168,6 +173,7 @@ def main():
 
     sources = {
         "1000G":    germline_defined,
+        "UPV":      germline_denovo,
         "germline": germline_all,
         "normal":   germline_all,   # alias for normal-tissue datasets (DLPFC)
         "somatic":  somatic_all,

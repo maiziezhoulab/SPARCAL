@@ -49,10 +49,13 @@ COLORMAP_COMBINED = ['white', 'lightgray', 'gray', 'darkgray']
 
 # Dataset configurations
 # REPLACE the whole DATASET_CONFIGS dict with this:
+# DLPFC_PREDEDUP=1 -> read/write the pre-dedup tree (data/dlpfc_prededup) so the
+# post-dedup results under data/dlpfc are left untouched. Default: unchanged.
+_PREDEDUP = os.environ.get("DLPFC_PREDEDUP") == "1"
 DATASET_CONFIGS = {
     "DLPFC": {
         "base_path": "/data/maiziezhou_lab/Datasets/ST_datasets/DLPFC12",
-        "output_base": "/data/maiziezhou_lab/leiy4/snv_calling/data/dlpfc",
+        "output_base": "/data/maiziezhou_lab/leiy4/snv_calling/data/dlpfc_prededup" if _PREDEDUP else "/data/maiziezhou_lab/leiy4/snv_calling/data/dlpfc",
         "spatial_subdir": "spatial",
         "position_file": "tissue_positions_list.csv",   # no header
         "scale_file": "scalefactors_json.json",
