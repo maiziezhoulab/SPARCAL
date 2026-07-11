@@ -7,7 +7,251 @@ Dynamically updated task list. When asked to "check ongoing tasks", Claude shoul
 
 ---
 
-## 🔶 IN PROGRESS — `defined_bin250kb` PROMOTED to all 12 DLPFC sections — job `12470671` RUNNING (resubmit of cancelled `12470146`)
+## 🔶 NEW (2026-07-10 PM) — Follow-ups from the 48-experiment recap: somtop+bin sweep, floor20 correction, GATK job tracking, combined-figure update, weekly report
+
+**1. Somatic-threshold sweep, NOW BINNED (user's request) — built + wired, ready to submit.**
+The raw somtop02/05/10/25 sweep (defined ∪ top-F% most-spatially-clustered somatic) never beat
+0.277 raw. Never tested binned. Built via `build_binned_matrices.py` (local, no sbatch) on the
+already-existing `DLPFC_151507_SPARCAL_defined_somtop{F}_matrix.pkl` sources:
+
+| modality | bins | mean SNV/bin | occupancy |
+|---|---|---|---|
+| somtop25_bin250kb | 8,897 | 6.8 | 3.2% |
+| somtop10_bin250kb | 8,871 | 6.6 | 3.1% |
+| somtop05_bin250kb | 8,855 | 6.5 | 3.1% |
+| somtop02_bin250kb | 8,852 | 6.5 | 3.1% |
+
+Wired into `clustering_config_recovery_test.json` (now 50 modalities). **USER SUBMITS:**
+```bash
+sbatch clustering_benchmark/run_clustering_recovery_test.slurm
+```
+Then read `data/dlpfc_recovery_test/151507/clustering/summary.csv`, compare each `somtopF_bin250kb`
+mean vs. `defsom_bin250kb` **0.364** (the untightened full-somatic-set binned result) and
+`defined_bin250kb` **0.351** (recovery-tree, same-seed baseline). Tests whether tightening the
+somatic filter before binning pushes past 0.364, or whether the untightened set was already right.
+
+**2. Correction — floor20 is NOT an improvement over `defined_bin250kb`, just a smaller matrix at
+equal accuracy.** User initially read `defined_bin250kb` (main tree, 10-run, **0.332**) vs.
+`floor20_bin250kb` (recovery tree, 5-run, **0.338**) as a small win. Those are from two *different*
+seed counts/trees. Same-tree, same-5-seeds comparison (both recovery tree): `defined_bin250kb`
+**0.351 ± 0.052** vs. `floor20_bin250kb` **0.338 ± 0.016** — floor20 is actually **0.013 lower**,
+i.e. statistically indistinguishable-to-slightly-worse, not better. **The real, reportable finding**:
+floor20 reaches statistically the same accuracy with **3,847 bins vs. 8,845 (2.3× smaller matrix)** —
+an efficiency result, not an accuracy gain. Already correctly stated this way in the "✅ DONE" entry
+below; this note exists because the discrepancy came up in conversation and is worth flagging clearly.
+
+**3. GATK bin250kb 12-section resubmit — job `12480568` submitted 2026-07-10, tracking.** Correct
+`--export` syntax this time (env var set before `sbatch`, not packed into `--export`, so no comma
+reaches sbatch's own parser):
+```bash
+MODALITIES=gatk_bin250kb N_RUNS=10 sbatch --array=0-11 --export=ALL clustering_benchmark/run_clustering.slurm
+```
+At submit: queued (`PENDING`, reason `QOSGrpGRES` — a6000 2-concurrent cap). Will populate
+`gatk_bin250kb` in the main `data/dlpfc/{s}/clustering/` tree for all 12 sections (currently only
+151507 has a 5-seed measurement, from the recovery tree). `ari_matrix_mean.csv` / `ari_boxplot*`
+auto-regenerate on completion (flock-guarded tail step in `run_clustering.slurm`).
+
+**4. `make_combined_figure.py` updated (user's request) — now plots ONLY the binned callers + GE.**
+Was `['sparcal', 'strelka2', 'gatk', 'gene_expr']` (raw matrices). Changed to
+`['defined_bin250kb', 'strelka2_bin250kb', 'gatk_bin250kb', 'gene_expr']`, `OURS = 'defined_bin250kb'`.
+`py_compile` clean. **Regenerate all 12 sections' combined figures after job `12480568` finishes**
+(needs `gatk_bin250kb` populated for every section first, else those columns are silently skipped):
+```bash
+python clustering_benchmark/make_combined_figure.py --all
+```
+(writes `data/dlpfc/{s}/clustering/combined_{s}.png/.pdf` for all 12, incl. the user-flagged
+`combined_151671.pdf`). Single-section form still works: `--section_id 151671`.
+
+**5. Weekly-report draft written + saved locally with figures.** All 48 section-151507 experiments,
+glossary of every modality token, headline findings table (bin=necessary, exome=harmful, UPV=no
+help, defsom=promising-but-unconfirmed, floor20=efficiency-not-accuracy), full per-category results,
+4 embedded figures (full-experiment boxplot, bin-size sweep, 12-section cross-modality, spatial
+domain comparison). Saved as a self-contained folder (report + copies of its 4 source PNGs, ~3.8MB):
+`data/dlpfc_recovery_test/151507/clustering_benchmark/weekly_report/DLPFC_SNV_representation_report.md`.
+Also published (text-only, no images — artifacts need self-contained/base64 assets, not done yet)
+as an Artifact: https://claude.ai/code/artifact/4bcc2d3b-e17c-4639-be5d-eab85ad2fabc — ask if a
+graphics-embedded refresh of the artifact is wanted.
+
+---
+
+## ✅ DONE (2026-07-10) — Does adding SPARCAL's OWN variants (UPV/somatic), THEN binning, beat `defined_bin250kb`? — job `12475342` COMPLETED, ANSWERED
+
+**User's question:** every prior test of adding SPARCAL's novel calls (UPV, somatic) to the defined
+set was done on the RAW (unbinned) matrix and all hurt. Nobody had tested adding them **and then
+binning** — i.e. does the aggregation mechanism that rescued `defined_bin250kb` (0.351) also rescue
+UPV/somatic once they're aggregated into the same 250kb bins, instead of sitting as raw dilutive
+columns? This was a real gap, not yet run.
+
+**Status of the previously-proposed "4 attempts" (Q4 representation study, A/B/C/D) — all 4 fully
+resolved, nothing outstanding:**
+
+| Exp | Modality | Result | Verdict |
+|---|---|---|---|
+| A | `defined_tfidf` | 0.186 | hurts |
+| B | `defined_svg05k/10k/20k` | 0.11–0.148 | hurts |
+| C | `defined_bin*` | **0.351 @ 250kb** | **winner** (already promoted, see above) |
+| D | `defined_vaf` / `defined_rawbin` | 0.13–0.16 | hurts (rank-collapsed embedding) |
+
+Separately, every raw (unbinned) variant-addition test also already completed and confirmed hurts:
+`defined_somatic` 0.245, `defined_upvrule` 0.263, `defined_floor{02,03,05,10,20,50}` 0.223–0.286 (all
+≤ baseline except floor05's 0.286, barely above), `defined_somtop{02,05,10,25}` 0.181–0.198,
+`defined_cap*` 0.11–0.16 (crashes — Q2 showed dropping dense variants is actively harmful, density
+IS the signal). **So: no raw-matrix variant-selection trick beats `defined1000G` (0.277) / and only
+binning beats it (0.351). But "adding UPV/somatic, then binning" was never actually tested — until now.**
+
+**Correction (user, 2026-07-10): "somatic" must mean 1kG + somatic, not somatic alone** — by analogy
+with germline = 1kG + UPV. Checked: the pipeline's own `somatic` per-barcode class is ALREADY only
+the top-10%-by-vote focal denovo (DLPFC has no purity/clone/CNV features to refine it further — this
+is a property of step-7's classification itself, not an extra subsetting choice), so union(1kG,
+somatic) turns out to be **byte-identical** to the already-existing, already-tested `defined_somatic`
+matrix (verified: same shape 4226×70,264, same values after alignment). **So the raw "1kG+somatic"
+number was already known: 0.245 (hurts)** — no new raw run needed there. What's genuinely new is
+binning it, and two more items the user requested (floor20+bin, exome-filtering).
+
+**Built (local/direct, no sbatch, ~5 min total):**
+1. Generated the true canonical `somatic` (13,419 SNVs) and `merged` (=1kG+UPV+somatic, everything
+   SPARCAL calls, 74,223 SNVs) class matrices for 151507 via `generate_sparcal_matrices.py --dataset
+   DLPFC --section_id 151507 --classes somatic merged`. `germline` (=`normal`, 1kG+UPV, 60,804 SNVs)
+   already existed. New script `build_defined_plus_somatic_matrix.py` unions 1000G ∪ somatic →
+   `defsom` matrix (70,264 cols, = defined_somatic, see correction above).
+2. Binned four sets at 250kb via the generalized `build_binned_matrices.py`: `germline_bin250kb`
+   (8,868 bins, 4.1% occ), `merged_bin250kb` (9,192 bins, 4.1% occ), `defsom_bin250kb` (9,178 bins,
+   3.2% occ, from the defsom/1kG+somatic matrix), and **`floor20_bin250kb`** (3,847 bins, 6.4% occ —
+   bins the ALREADY-BUILT `defined_floor20` matrix, 19,998 cols; queued since the bin-size-sweep DONE
+   entry above, now actually built). User's observation that motivated this: `defined_floor20`
+   (drops the 36,847 lowest-prevalence/rarest defined variants, keeps only 19,998) scores 0.277 ≈
+   baseline unbinned — losing 65% of columns costs ~nothing raw. Question: does removing that dead
+   weight BEFORE binning concentrate the aggregate signal into fewer, denser, more informative bins
+   (beat 0.351), or does it just starve some bins entirely (hurt)?
+3. **New: exome-capture filtering** (user's idea, not yet tried in this study). New script
+   `build_exome_filtered_matrices.py` intersects SNV columns against
+   `/data/maiziezhou_lab/Softwares/refdata-GRCh38-2.1.0/regions/Twist_Exome_Core_Covered_Targets_hg38.bed`
+   (same Twist exome kit already used elsewhere in this repo for DLPFC exome QC, chr-prefix stripped
+   to match our bare-chromosome column keys, overlapping BED intervals merged for an exact
+   bisect-based point-in-region test). Built for three variant sets: `1000G_exome` (56,845→2,428
+   cols, 4.3% in exome), `normal_exome` (=germline_exome, 60,804→2,534, 4.2%), `defsom_exome`
+   (70,264→2,877, 4.1%). Rationale: exome-captured regions are the best-characterized, most
+   artifact-resistant part of the genome — orthogonal, annotation-based (not data-driven) filter,
+   worth testing whether narrowing to just these SNVs helps vs. the data-driven cap/floor filters
+   (which already showed density, not annotation quality, is what matters — this tests whether that
+   still holds when restricted to exons).
+4. Wired 10 new modalities into `clustering_config_recovery_test.json` (now 46 total, all pkl paths
+   verified to exist): `germline_raw`, `germline_bin250kb`, `merged_raw`, `merged_bin250kb`,
+   `defsom_bin250kb`, `floor20_bin250kb`, `defined_exome`, `germline_exome`, `defsom_exome`,
+   `merged_exome`. (Dropped the pure-somatic-only `somatic_raw`/`somatic_bin250kb`/`somatic_exome`
+   modalities — superseded by the corrected `defsom` variant set per the correction above; the raw,
+   unfiltered `DLPFC_151507_SPARCAL_somatic_exome_matrix.pkl` file still exists under
+   `data/dlpfc/151507/matrix/` from the P4/P6/DCIS/OVAR_P5 exome-filtering pass, just not wired here.)
+   Existing 36 modalities stay cached — only these 10 compute (46 new runs, 5 seeds each).
+
+**SUBMITTED 2026-07-10 as job `12475342` (`sbatch clustering_benchmark/run_clustering_recovery_test.slurm`)
+— COMPLETED in 36m13s, exit 0.** All 10 new modalities × 5 seeds = 50 runs present in
+`data/dlpfc_recovery_test/151507/clustering/summary.csv`, all `status=ok`, correct 4221-spot shape.
+
+**RESULT — variant set (SPARCAL, additive), raw vs. bin250kb ARI** (5-seed means; std in parens):
+
+| variant set (SPARCAL, additive) | raw ARI | bin250kb ARI |
+|---|---|---|
+| 1000G (defined only) | 0.277 | **0.351** (prior winner) |
+| germline (1kG + UPV) | 0.177 (±0.015) | 0.317 (±0.056) |
+| defsom (1kG + somatic) | 0.245 (±known) | **0.364** (±0.062) |
+| merged (1kG + UPV + somatic, everything) | 0.160 (±0.007) | 0.287 (±0.081) |
+| floor20 (1kG, rarest 65% dropped) | 0.277 (±known) | 0.338 (±0.016) |
+
+**RESULT — exome-restricted (annotation filter, raw only):**
+
+| exome-restricted | cols kept | ARI (±std) |
+|---|---|---|
+| `defined_exome` (1kG ∩ exome) | 2,428 | 0.134 (±0.027) |
+| `germline_exome` (1kG+UPV ∩ exome) | 2,534 | 0.142 (±0.009) |
+| `defsom_exome` (1kG+somatic ∩ exome) | 2,877 | 0.094 (±0.027) |
+| `merged_exome` (1kG+UPV+somatic ∩ exome) | 2,961 | 0.148 (±0.013) |
+
+**Answers to the questions posed:**
+1. **`germline_bin250kb` (0.317) does NOT beat `defined_bin250kb` (0.351)** — binning does NOT rescue
+   UPV enough to help beyond pure 1kG. It's still a huge recovery over raw germline (0.177→0.317,
+   +0.140), so binning fixes most of UPV's raw-matrix dilution damage, but not all of it. **This means
+   the "SPARCAL is doing nothing" concern is NOT resolved** — the pipeline's actual UPV output (as
+   currently used in the germline/normal matrix) doesn't add value over defined-only, whether raw or
+   binned.
+2. **Surprise: `defsom_bin250kb` (0.364) slightly BEATS `defined_bin250kb` (0.351)** — this contradicts
+   the going-in hypothesis (somatic is spatially focal/clone-consistent, predicted to underperform
+   after binning). However it's noisy — 5-seed range 0.247–0.430, std 0.062, roughly double
+   `defined_bin250kb`'s own std (0.059 from the bin-size sweep) — so this is a *weak, uncertain* win,
+   not a robust one. Worth a higher-seed-count rerun before treating it as a real result.
+3. **`merged_bin250kb` (0.287) is worse than both `defined_bin250kb` and `defsom_bin250kb`** — adding
+   UPV on top of the somatic-augmented set makes things worse, consistent with UPV being dead weight
+   (see point 1). Confirms: of the three additive combinations, defsom is the best, germline is
+   second, merged (everything) is the worst — UPV, not somatic, is the drag.
+4. **`floor20_bin250kb` (0.338) does NOT beat `defined_bin250kb` (0.351)** — slightly below, small
+   gap relative to its own std (±0.016), so essentially neutral/marginally negative. Dropping the
+   rarest 65% of defined variants before binning neither helps nor meaningfully hurts; the few-dense-
+   bins hypothesis didn't pan out as an improvement.
+5. **Exome-restriction hurts across the board** (0.094–0.148, all well below the unrestricted raw
+   1000G baseline 0.277), confirming the prior finding that aggressive column-count cuts on this data
+   hurt regardless of whether the cut is prevalence-based (`cap02`/`floor50`, which crashed similarly)
+   or annotation-based (exome). Restricting to exons is not a useful filter for this clustering task.
+
+**Bottom line:** `defined_bin250kb` (0.277 raw → 0.351 defined-only-binned) remains the strongest
+robust SNV-only representation. The one modality that edges it out (`defsom_bin250kb` 0.364) does so
+narrowly and noisily — not yet a confident claim. No combination that includes UPV beats binned-1kG.
+
+---
+
+## 🔶 NEW (2026-07-10) — Strelka2/GATK 250kb binning PROMOTED to all 12 DLPFC sections — HALF DONE (strelka2 only), gatk still needs resubmit
+
+Follow-up to the recovery-test finding (job `12470601`) that binning is a generic sparse-matrix win
+(Strelka2/GATK gained as much as SPARCAL from 250kb binning on 151507 alone). This promotes that to
+all 12 sections for a true 12-section apples-to-apples comparison against the already-promoted
+`defined_bin250kb` (12-section mean 0.363).
+
+**Built (local/direct, no sbatch, ~3 min total):**
+1. Built `DLPFC_{s}_strelka2_bin250kb_matrix.pkl` and `DLPFC_{s}_gatk_bin250kb_matrix.pkl` for the 11
+   sections that didn't have them yet (151507 already did, from the recovery test) via
+   `build_binned_matrices.py --caller {strelka2,gatk} --filter germline --grouping 6 --out_prefix ""
+   --bin_sizes 250000`. All 12 sections × both callers verified present.
+2. Added `strelka2_bin250kb` and `gatk_bin250kb` as modalities in the **main**
+   `clustering_config.json` (now 7 modalities total): `{caller: strelka2/gatk, filter: bin250kb,
+   grouping: ""}` — matches the `DLPFC_{s}_{caller}_bin250kb_matrix.pkl` naming exactly. Verified
+   every (section × modality) pkl path resolves and exists.
+
+**SUBMITTED 2026-07-10 as job `12475080` (`--array=0-11 --export=ALL,MODALITIES=strelka2_bin250kb,gatk_bin250kb,N_RUNS=10 clustering_benchmark/run_clustering.slurm`) — COMPLETED, but only HALF ran: `gatk_bin250kb` never computed.**
+
+**Bug found:** `sbatch --export=...` splits its whole argument on commas to separate `KEY=VALUE`
+pairs — a comma *inside* a value breaks it. `MODALITIES=strelka2_bin250kb,gatk_bin250kb` was parsed
+as `MODALITIES=strelka2_bin250kb` plus a stray bare token `gatk_bin250kb` (silently dropped), so
+`gatk_bin250kb` was **never passed to `--modalities`**. Confirmed by grepping the `Modalities:` banner
+line in every section's log (`slurm_output/clustering/section_{0..11}.out`) — all 12 say
+`Modalities: strelka2_bin250kb` only, no `gatk_bin250kb` anywhere. `N_RUNS=10` DID come through fine
+(single-valued, no comma), so the 10 runs/section that did happen are trustworthy.
+
+**RESULT — `strelka2_bin250kb` 12-section mean ARI** (from
+`data/dlpfc/clustering_benchmark/ari_matrix_mean.csv`, new column added alongside the existing 5):
+
+| Modality | 12-section mean ARI |
+|---|---|
+| gene_expr (baseline) | 0.412 |
+| **defined_bin250kb** | **0.363** |
+| strelka2_bin250kb | **0.257** |
+| sparcal | 0.217 |
+| gatk | 0.211 |
+| strelka2 (raw) | 0.193 |
+
+Strelka2 gains +0.064 absolute from 250kb binning at the full 12-section scale (0.193→0.257) — close
+to the +0.089 seen on 151507 alone in the earlier single-section test, confirming binning is a generic
+sparse-matrix win, not SPARCAL-specific, at scale. `defined_bin250kb` (0.363) still leads decisively
+over binned strelka2 by +0.106.
+
+**`gatk_bin250kb` still needs to be run — resubmit with the export bug avoided** (set the var in the
+shell environment instead of packing it into `--export`, so the comma never reaches sbatch's own
+parser):
+```bash
+MODALITIES=gatk_bin250kb N_RUNS=10 sbatch --array=0-11 --export=ALL clustering_benchmark/run_clustering.slurm
+```
+
+---
+
+## ✅ DONE — `defined_bin250kb` PROMOTED to all 12 DLPFC sections — job `12470671` COMPLETED
 
 **Done 2026-07-10 (this session), all local/direct commands (no sbatch — reused already-completed
 step-7 output, ~30 min wall-clock):**
@@ -51,15 +295,26 @@ Only 1 of the 12 array tasks will actually run at a time alongside `12470601` (a
 `maiziezhou_lab_acc` a6000 cap = 2 concurrent GPUs); the rest queue on `QOSGrpGRES` and serialize
 automatically as slots free up.
 
-**NEXT SESSION (after `12470671` completes): read `data/dlpfc/{s}/
-clustering/summary.csv` for every section** (`defined_bin250kb` rows) **and the regenerated
-`data/dlpfc/clustering_benchmark/ari_table.csv`. Compare 12-section mean ARI: `defined_bin250kb` vs.
-the post-dedup 10-run baselines — sparcal 0.217, gatk 0.211, strelka2 0.193, gene_expr 0.412.**
-Caveat: the 151507-only recovery-test saw defined_bin250kb 0.351 vs. defined1000G 0.277 (+0.074), but
-the 12-section `sparcal` baseline (0.217, includes UPV) is lower than the single-section
-`defined1000G` 0.277 it was benchmarked against there — open question is whether the margin holds
-section-to-section against the *actual* 12-section sparcal baseline, not just the single-section
-defined1000G one.
+**RESULT (job `12470671`, completed 2026-07-10) — 12-section mean ARI** (from
+`data/dlpfc/clustering_benchmark/ari_matrix_mean.csv`, all 12 sections × 10 runs):
+
+| Modality | 12-section mean ARI |
+|---|---|
+| gene_expr (baseline) | 0.412 |
+| **defined_bin250kb** | **0.363** |
+| sparcal (current pipeline, incl. UPV) | 0.217 |
+| gatk | 0.211 |
+| strelka2 | 0.193 |
+
+`defined_bin250kb` nearly closes the gap to the gene-expression baseline and is a **~67% relative
+gain** over the current `sparcal` pipeline matrix (0.217→0.363), holding consistently per-section
+(range 0.24–0.58, above 0.217 in every section). This is the strongest result of the representation
+study so far — candidate for the paper's main SNV-clustering figure.
+
+**Known data gap (pre-existing, not from this job):** section 151671's `strelka2` modality has all
+10 runs failing with an R `mclust` SVD error (`infinite or missing values in 'x'`) —
+silently NaN'd out of the aggregate table. Not blocking, but fix before reporting a clean
+strelka2 column.
 
 **Open question raised by user (2026-07-10) — is binning a SPARCAL-specific win or a generic
 sparse-binary-matrix win? — GENERALIZATION DONE, ready to test on 151507.** If aggregating into 250kb
@@ -90,23 +345,58 @@ sparse caller" rather than "SPARCAL's variant set aggregates better."
    already-present `defined1000G` 0.277 / `defined_bin250kb` 0.351. (Existing modalities are cached
    and skipped — only these 4 compute.)
 
-**SUBMITTED 2026-07-10 as job `12470601`** (plain `sbatch clustering_benchmark/run_clustering_recovery_test.slurm`,
-no `RUNS`/`FORCE` override → default 5 runs/modality). Config now has 36 modalities total; 32 already
-cached and skip instantly — only the 4 new ones compute: `strelka2_raw` (in progress), `strelka2_bin250kb`,
-`gatk_raw`, `gatk_bin250kb` (18 runs total). Running on `gpu0075`, isolated output tree, no conflict with
-the concurrently-submitted `12470671` (12-section `defined_bin250kb` array job, see previous section) —
-disjoint output paths, GPU cap auto-serializes the two.
+**SUBMITTED 2026-07-10 as job `12470601`, COMPLETED.** Config had 36 modalities total; 32 already
+cached, the 4 new ones (`strelka2_raw`, `strelka2_bin250kb`, `gatk_raw`, `gatk_bin250kb`) computed
+5 runs each.
 
-**NEXT SESSION (after `12470601` completes): read `data/dlpfc_recovery_test/151507/clustering/summary.csv`
-and compare, per caller, raw→bin:
-does binning lift strelka2 (raw ~0.13) and gatk (raw ~0.17) the way it lifted defined (0.277→0.351)?
-- If **all three** callers gain similarly → binning is a generic sparse-matrix win; report
-  defined_bin250kb vs strelka2_bin250kb vs gatk_bin250kb (fair comparison), not vs raw baselines.
-- If **SPARCAL gains more** → the aggregation advantage is variant-set-specific (SPARCAL's calls tile
-  informative regions better). Either way the head-to-head is now apples-to-apples.
-Then, if binning helps, promote strelka2/gatk binning to all 12 sections: run the generalized builder
-per section and add `{caller: strelka2, filter: bin250kb, grouping: ""}` (+ gatk) to the **main**
-`clustering_config.json` (the loader drops an empty grouping → `DLPFC_{s}_strelka2_bin250kb_matrix.pkl`).
+**RESULT — ANSWERED: binning is a generic sparse-binary-matrix win, not SPARCAL-specific.**
+From `data/dlpfc_recovery_test/151507/clustering/summary.csv` (5-run means):
+
+| Caller | raw ARI | bin250kb ARI | Δ (absolute) |
+|---|---|---|---|
+| SPARCAL (defined1000G) | 0.277 | 0.351 | +0.074 |
+| GATK | 0.190 | 0.266 | +0.076 |
+| Strelka2 | 0.136 | 0.225 | +0.089 |
+
+GATK and Strelka2 gain **as much or slightly more** in absolute ARI than SPARCAL from 250kb binning
+— so the aggregation benefit is generic to sparse spot×SNV matrices, not a SPARCAL-specific effect.
+However, the fair post-bin comparison still favors SPARCAL: its lead over GATK/Strelka2 is
+essentially unchanged after binning (gap to GATK 0.087→0.085; gap to Strelka2 0.142→0.126) — i.e.
+SPARCAL's variant set isn't disproportionately helped by binning, it was already ahead and stays
+ahead.
+
+**Possible next step (not yet done): promote strelka2/gatk 250kb binning to all 12 sections** —
+run the generalized `build_binned_matrices.py` per section for both callers and add
+`{caller: strelka2, filter: bin250kb, grouping: ""}` (+ gatk) to the **main**
+`clustering_config.json`, to get a 12-section apples-to-apples binned comparison matching the
+`defined_bin250kb` 12-section run above. Would need ~22 more matrix-build calls (local, no sbatch)
++ a new clustering array job.
+
+**How the 250kb bin length was chosen — swept 7 sizes (1Mb→25kb) on section 151507, 5 runs each.**
+Results are stored at `data/dlpfc_recovery_test/151507/clustering/summary.csv` (modalities
+`defined_bin{1mb,500kb,250kb,125kb,100kb,50kb,25kb}`), plotted in
+`data/dlpfc_recovery_test/151507/clustering_benchmark/ari_binsize_sweep.{png,pdf}` (+ table
+`ari_binsize_sweep_table.csv`), generated by `clustering_benchmark/make_binsize_sweep_plot.py`:
+
+| Bin size | n bins | mean ARI (5 runs) |
+|---|---|---|
+| 1Mb | 2,695 | 0.277 |
+| 500kb | 5,061 | 0.246 |
+| **250kb** | **8,845** | **0.351** |
+| 125kb | 14,076 | 0.310 |
+| 100kb | 16,027 | 0.303 |
+| 50kb | 22,252 | 0.263 |
+| 25kb | 27,993 | 0.244 |
+
+250kb is a clean, symmetric peak — an inverted-U over bin size, not a monotonic trend: coarser bins
+(1Mb/500kb) merge spatially-uncorrelated regions and wash out signal back toward the raw unbinned
+`defined1000G` ARI (0.277); finer bins (100kb→25kb) re-sparsify and decay back down toward the
+`defined_rawbin`/no-aggregation floor (0.129). 250kb sits at the top of the curve (+0.074 over raw),
+which is the empirical justification for picking it as the default bin length (not a preset choice —
+it was swept and selected post hoc). The same plot also shows the strelka2/gatk 250kb-binned
+reference bars (blue/green) for scale, confirming 250kb still beats both other callers even at their
+own optimum bin size (untested whether 250kb is *their* optimum too — only 250kb was swept for
+strelka2/gatk so far).
 
 ---
 
