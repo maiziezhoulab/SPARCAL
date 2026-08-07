@@ -7,6 +7,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 See [On_going.md](On_going.md) for the live task list (active SLURM jobs, expected outputs, completed work).
 When the user says **"check ongoing tasks"**, read that file, run `squeue` to check job status, inspect output files, and update the file in place.
 
+## ⭐ Current paper direction (READ FIRST) — 2026-07-28 (advisor)
+
+See **[PAPER_PLAN.md](PAPER_PLAN.md)** for the authoritative research plan and paper vision. The paper
+is the **SPARCAL modality paper** again — spatial SNV calling guided by CNV/clone context — continuing
+`SPARCAL_pnas_2026/PNAS/PaperDraft.tex`. The claim is *the variants we call make more sense than other
+callers', plus insight into which representation/setting is best*, NOT a win on every metric. Germline
+gets two sections (unbinned variant-set quality; 250-kb-binned representation). Somatic is validated by
+COSMIC cascade + region-detection ARI + specific DNA-confirmed hits — with the coverage/UMI baseline
+deliberately out of scope here.
+
+**The coverage-confound / UMI-dominance benchmark is deferred to a second paper** and is parked, with
+every finding that endangers a current claim, in **[PAPER_PLAN_DEPRECATED.md](PAPER_PLAN_DEPRECATED.md)**
+— read it before writing any manuscript sentence.
+
 For the **paper figure design and manuscript wording** (abstract/methods/results,
 variant-category definitions), see [pipeline_intro.md](pipeline_intro.md).
 
@@ -180,6 +194,38 @@ Dataset configs (base paths, BAM patterns, reference genome, spatial file locati
 - **DLPFC** – GRCh38 (no `chr` prefix in chromosomes), sections 151507–151510 and 151669–151676
 - **P4_TUMOR / P6_TUMOR** – hg19 (`chr` prefix), Visium breast tumor data
 - **DCIS** – GRCh38 (`chr` prefix), ductal carcinoma in situ
+- **OVAR_P5** – GRCh38 (`chr` prefix, `FFPE_VISIUM` reference). **Ovarian cancer, one patient,
+  one section** (`P5_sr13`, 2,108 per-barcode BAMs). Colleague-generated; the SpaceRanger `outs/`
+  are **read-only** at `/data/maiziezhou_lab/Pankaj/calicost_p5/spaceranger_runs`, so `base_path`
+  points at THIS project for the BAM glob (`data/ovar_p5/{section_id}/split_BAM/*.bam`) while
+  spatial files are read from the colleague's outs via `spatial_base_path`. Headerless
+  `tissue_positions_list.csv`. Runners: `run_slurm/ovar_p5/` (numbered 0–7 + `submit_chain_2_7.sh`).
+  Pipeline has been run through the matrix step.
+- **NCCE** – GRCh38 (`chr` prefix, `FFPE_VISIUM` reference). **Japanese NCCE gastric-cancer cohort —
+  MULTIPLE PATIENTS, SERIAL BIOPSIES**: 5 patients (6, 8, 10, 11 non-responders; **14 responder**)
+  × 3 serial sections each (A/B/C = sampling timepoints) = **15 sections**, 5,202 in-tissue spots
+  total (180–751 per section). This is the first multi-patient *and* first longitudinal dataset in
+  the project — do not treat the 15 sections as independent samples in any statistic; they are
+  nested within 5 patients, so cross-section tests must account for patient as a grouping factor.
+  The formal dataset report, quantitative hotspot metrics, and paper-ready
+  text are in **`data/ncce/biological_analysis/report_v1/NCCE_DATASET_REPORT.md`**;
+  the supporting exploratory analysis is
+  **`data/ncce/biological_analysis/report_v1/NCCE_SPARCAL_biological_report.md`**.
+  Read the formal report before making any NCCE or manuscript claim. Its two
+  load-bearing cautions: **copyKAT state was an INPUT to the NCCE
+  spatial filter**, so copyKAT/SPARCAL agreement is internal consistency and *never* independent
+  validation; and RNA depth is wildly heterogeneous (section median UMI **178 (6C) to 55,844
+  (6B)**), so coverage adjustment is mandatory. 8C, 10B and 11C have no final somatic-pattern
+  calls at all.
+  Read-only SpaceRanger outs at `/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs`
+  (`NCCE_{section_id}/outs/spatial`); split BAMs written under this project. Newer **headered**
+  `tissue_positions.csv` (the OVAR_P5/DLPFC path expects headerless — the two are handled by
+  separate branches in `mpileup_pipeline.py`). Per-section cell-type and copyKAT annotations are
+  catalogued in **`data/ncce/manifest.tsv`** (in-tissue spots, celltype/copyKAT coverage,
+  aneuploid counts, source paths) — read that before using any section, because annotation
+  coverage varies wildly: copyKAT coverage runs from **0.107 (6C) to 1.000**, and 6C has only 8
+  aneuploid spots. Runners: `run_slurm/ncce/`. Pipeline has been run through the matrix step for
+  all 15 sections (`data/ncce/{section}/matrix/NCCE_{section}_SPARCAL_{class}_matrix.pkl`).
 <!-- - **FFPE_VISIUM / 10X_BC_*** – GRCh38 (`chr` prefix) -->
 
 The `chr` prefix convention differs by dataset. Chromosome naming mismatch between the BAM and reference is a common failure mode.
