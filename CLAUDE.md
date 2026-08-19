@@ -24,6 +24,12 @@ every finding that endangers a current claim, in **[PAPER_PLAN_DEPRECATED.md](PA
 For the **paper figure design and manuscript wording** (abstract/methods/results,
 variant-category definitions), see [pipeline_intro.md](pipeline_intro.md).
 
+For the durable mapping from manuscript figure numbers/assets to the plotting
+scripts and source tables in this repository, read
+[`../SPARCAL_pnas_2026/FIGURE_PROVENANCE.md`](../SPARCAL_pnas_2026/FIGURE_PROVENANCE.md)
+before searching or regenerating figures. Update that file whenever a generator,
+input table, output filename, or redraw status changes.
+
 ## Variant Categories & Naming (paper)
 
 The spatial filter (step 7) partitions variants into **three classes by spatial
