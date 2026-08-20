@@ -33,8 +33,9 @@ CRITICAL FRAMING (PAPER_PLAN.md Sec 3 Story C5, Sec 5 Decision D7, Sec 6):
 
 VERIFY-BEFORE-PLOT DISAGREEMENT FOUND (reported prominently, not silently
 trusted) -- see SUMMARY.md / README.md in the figure output dir:
-  The task brief and PAPER_PLAN.md Story C5 item 16 both state "11 of 14 [WES-
-  confirmed somatic variants] have no gene annotation." Recomputed directly
+  The task brief stated "11 of 14 [WES-confirmed somatic variants] have no gene
+  annotation." (PAPER_PLAN.md Story C5 item 16 was corrected to 13 on 2026-07-29;
+  Decision D7 kept quoting 11 until it was corrected on 2026-08-20.) Recomputed directly
   from data/somatic_evidence_2026-07-28/wes_confirmed_somatic_annotated.csv
   (the dedicated deliverable script's own output, and its SUMMARY.md, which
   independently reports "13 unannotated"): only 1 of 14 (GJB2) carries ANY gene

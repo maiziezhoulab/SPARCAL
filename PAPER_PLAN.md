@@ -629,9 +629,16 @@ inconsistency that sank the previous plan. Do this **first**, then build §4.5 o
 
 **Still open:**
 
-- **D7 — what Story C5 (Fig. 7) actually claims, now that both of its legs are weak.** The COSMIC
+- **D7 — RESOLVED 2026-08-20: option (b).** Fig. 7 is reframed **entirely around the HLA/MHC
+  recurrence caution**; the next task is to establish what that recurrence means biologically, and
+  to find a defensible alternative framing if it does not hold up. Original statement of the
+  decision follows.
+  **What Story C5 (Fig. 7) actually claims, now that both of its legs are weak.** The COSMIC
   signature is falsified (HLA-driven), and the WES-confirmed set is 14 variants with 0 cancer-gene
-  hits and 11 unannotated (§3 Story C5 item 16). Options: **(a)** merge Fig. 7 into the platform-limit
+  hits and **13** unannotated (§3 Story C5 item 16 — this line previously said 11, contradicting
+  the 2026-07-29 correction two hundred lines above it; 13 is the value verified against
+  `wes_confirmed_somatic_annotated.csv`, where `GJB2` is the only annotated locus).
+  Options: **(a)** merge Fig. 7 into the platform-limit
   section as "what individual retained calls look like at this depth" — honest, removes a weak
   standalone figure, and the material still appears; **(b)** keep Fig. 7 but reframe it entirely
   around the **HLA/MHC recurrence caution**, which is our most novel somatic-side finding and

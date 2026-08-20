@@ -70,3 +70,12 @@ slurm-*.out
 .vscode/
 __pycache__/
 *.pyc
+
+# Monopogen run trees (repaired 2026-08-19/20 after the ACCRE upgrade).
+# ~5.7 GB of BAM symlinks, a 3.4 GB reference and per-chromosome VCF/matrix
+# output. The code, the SLURM scripts and the READMEs are small enough to keep,
+# but the run output must not enter git -- regenerate with run_germline.slurm +
+# run_somatic_array.slurm. Results tables live in
+# SPARCAL_Benchmarking/analysis/region_method_benchmark/monopogen_dcis_2026-08-20/.
+Monopogen_DCIS1/
+Monopogen_DCIS2/
