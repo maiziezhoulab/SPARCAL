@@ -242,7 +242,7 @@ def main():
     ax_a.set_axisbelow(True)
     ax_a.legend(fontsize=5.8, frameon=False, loc="upper left", handlelength=1.1,
                 handletextpad=0.4, borderaxespad=0.1)
-    ax_a.set_title("a", fontsize=10, fontweight="bold", loc="left", x=-0.24, y=1.03)
+    ax_a.set_title("c", fontsize=10, fontweight="bold", loc="left", x=-0.24, y=1.03)
 
     # ---- Panel (b): P4-P6 shared somatic genes, HLA highlighted ----
     genes = df_b.gene.tolist()
@@ -276,7 +276,7 @@ def main():
               transform=ax_b.transAxes, ha="right", va="bottom", fontsize=6.0,
               color=INK, bbox=dict(facecolor="white", edgecolor=GRID, pad=3))
     ax_b.set_title("P4 ∩ P6 shared somatic genes", fontsize=8.0, loc="center", pad=4, color=INK)
-    ax_b.set_title("b", fontsize=10, fontweight="bold", loc="left", x=-0.30, y=1.02)
+    ax_b.set_title("d", fontsize=10, fontweight="bold", loc="left", x=-0.30, y=1.02)
 
     # ---- Panel (c): 14 WES-confirmed somatic variants, dot plot ----
     order = df_c.sort_values(["sample", "pct_spots"], ascending=[True, False]).reset_index(drop=True)
@@ -315,7 +315,7 @@ def main():
               fontweight="bold")
     ax_c.set_title("WES-confirmed SPARCAL somatic calls (n=14; 0 Cancer Gene Census)",
                     fontsize=7.6, loc="center", pad=4, color=INK)
-    ax_c.set_title("c", fontsize=10, fontweight="bold", loc="left", x=-0.26, y=1.015)
+    ax_c.set_title("e", fontsize=10, fontweight="bold", loc="left", x=-0.26, y=1.015)
 
     # ---- shared legend for panel (c) ----
     handles = [

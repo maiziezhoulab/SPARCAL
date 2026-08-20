@@ -53,6 +53,7 @@ from scipy.stats import fisher_exact
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib import font_manager
 
 plt.rcParams["pdf.fonttype"] = 42
@@ -142,12 +143,21 @@ def build_fig5a():
     rows = []
     for sk in SAMPLES:
         for cls in CLASS_ORDER:
-            n_hits = len(hits[(hits["sample"] == sk) & (hits.class_code == cls)])
+            sub = hits[(hits["sample"] == sk) & (hits.class_code == cls)]
+            n_hits = len(sub)
             n_total = SET_TOTALS[(sk, cls)]
+            # xMHC share of this class's catalogue hits. chr6:28-34 Mb is 0.19% of
+            # the genome, so a large share here is the concentration panel b tests.
+            in_mhc = ((sub.chrom.astype(str) == MHC_CHR)
+                      & (sub.pos.astype(int).between(MHC_LO, MHC_HI)))
+            n_hits_mhc = int(in_mhc.sum())
             rows.append({
                 "sample": sk, "class_code": cls, "class_label": CLASS_LABEL[cls],
                 "n_hits": n_hits, "n_total": n_total,
                 "hit_rate_pct": 100 * n_hits / n_total,
+                "n_hits_mhc": n_hits_mhc,
+                "hit_rate_mhc_pct": 100 * n_hits_mhc / n_total,
+                "pct_hits_from_mhc": 100 * n_hits_mhc / n_hits if n_hits else float("nan"),
             })
     df = pd.DataFrame(rows)
     out = os.path.join(DERIVED_DIR, "fig5a_cosmic_hit_rates.csv")
@@ -215,6 +225,7 @@ def build_fig5b():
             "raw": (s["hit"], s["tot"], a["hit"], a["tot"]),
             "xMHC_excluded": (s["hit"] - s["hit_mhc"], s["tot"] - s["tot_mhc"],
                                a["hit"] - a["hit_mhc"], a["tot"] - a["tot_mhc"]),
+            "xMHC_only": (s["hit_mhc"], s["tot_mhc"], a["hit_mhc"], a["tot_mhc"]),
         }.items():
             ratio = (sh / st) / (ah / at)
             _, p = fisher_exact([[sh, st - sh], [ah, at - ah]], alternative="greater")
@@ -254,9 +265,17 @@ def main():
         bars = ax.bar(xpos, sub.hit_rate_pct, width=width * 0.92,
                        color=CLASS_COLOR[cls], label=f"SPARCAL {CLASS_LABEL[cls]}",
                        edgecolor=INK, linewidth=0.65, zorder=3)
+        # Overlay the xMHC-derived part of the same bar. It is drawn on top of the
+        # bar it belongs to, so bar height still reads as the total hit rate.
+        ax.bar(xpos, sub.hit_rate_mhc_pct, width=width * 0.92,
+               bottom=sub.hit_rate_pct - sub.hit_rate_mhc_pct,
+               color="none", edgecolor=INK, linewidth=0.65, hatch="////", zorder=4)
+        # Annotate the raw fraction behind each bar rather than the percentage the
+        # bar already encodes, so the reader sees the magnitude of each set (the
+        # unresolved sets are ~10x the somatic sets and that is invisible in a rate).
         for b, (_, r) in zip(bars, sub.iterrows()):
             ax.text(b.get_x() + b.get_width() / 2, r.hit_rate_pct + 0.035,
-                    f"{r.hit_rate_pct:.2f}%  (n={int(r.n_total):,})",
+                    f"{int(r.n_hits):,}/{int(r.n_total):,}",
                     ha="center", va="bottom", fontsize=5.5, color=INK, rotation=90)
     ax.set_xticks(x)
     ax.set_xticklabels(SAMPLES, fontsize=8)
@@ -269,17 +288,26 @@ def main():
     ax.spines["bottom"].set_color(MUTED)
     ax.grid(axis="y", color=GRID, linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
-    ax.legend(fontsize=6.2, frameon=False, loc="upper right", ncol=1,
-              handlelength=1.1, handletextpad=0.5, borderaxespad=0.1)
+    h_mhc_hatch = mpatches.Patch(facecolor="white", edgecolor=INK, linewidth=0.65,
+                                 hatch="////", label="of which xMHC (chr6:28–34 Mb)")
+    handles, labels = ax.get_legend_handles_labels()
+    leg = ax.legend(handles=handles + [h_mhc_hatch], labels=labels + [h_mhc_hatch.get_label()],
+                    fontsize=6.2, frameon=False, loc="upper right", ncol=1,
+                    handlelength=1.1, handletextpad=0.5, borderaxespad=0.1,
+                    title="bar labels: COSMIC hits / variants in set")
+    leg.get_title().set_fontsize(5.8)
+    leg.get_title().set_color(MUTED)
     ax.set_title("a  SPARCAL somatic and unresolved results",
                  fontsize=8.2, fontweight="bold", loc="left", x=-0.16, y=1.02)
 
     # ---- Panel (b): forest-style ratio + 95% CI, raw vs xMHC-excluded ----
     ax = axes[1]
     variant_style = {
-        "raw": dict(marker="o", facecolor="#e34948", edgecolor="#e34948", dy=0.16, label="raw"),
-        "xMHC_excluded": dict(marker="o", facecolor="white", edgecolor="#e34948", dy=-0.16,
+        "raw": dict(marker="o", facecolor="#e34948", edgecolor="#e34948", dy=0.26, label="raw"),
+        "xMHC_excluded": dict(marker="o", facecolor="white", edgecolor="#e34948", dy=0.0,
                                label="xMHC-excluded (chr6:28–34 Mb)"),
+        "xMHC_only": dict(marker="D", facecolor="#8c2d2c", edgecolor="#8c2d2c", dy=-0.26,
+                           label="inside xMHC only"),
     }
     ylabels = []
     yticks = []
@@ -303,8 +331,8 @@ def main():
     ax.set_yticks(yticks)
     ax.set_yticklabels(ylabels, fontsize=8)
     ax.set_xlabel("somatic / unresolved COSMIC-hit-rate ratio", fontsize=7.5)
-    ax.set_xlim(0.75, 1.75)
-    ax.set_ylim(-0.6, len(SAMPLES) - 0.4)
+    ax.set_xlim(0.55, 5.6)
+    ax.set_ylim(-0.72, len(SAMPLES) - 0.22)
     ax.tick_params(axis="x", labelsize=7)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -318,9 +346,12 @@ def main():
     h_mhc = plt.Line2D([], [], marker="o", linestyle="none", markersize=5,
                         markerfacecolor="white", markeredgecolor="#e34948",
                         label="xMHC-excluded")
-    ax.legend(handles=[h_raw, h_mhc], fontsize=6.2, frameon=False, loc="lower right",
+    h_only = plt.Line2D([], [], marker="D", linestyle="none", markersize=4.4,
+                         markerfacecolor="#8c2d2c", markeredgecolor="#8c2d2c",
+                         label="inside xMHC only")
+    ax.legend(handles=[h_raw, h_mhc, h_only], fontsize=6.2, frameon=False, loc="lower right",
               handletextpad=0.4, borderaxespad=0.1)
-    ax.set_title("b  Somatic/unresolved ratio; xMHC sensitivity",
+    ax.set_title("b  Somatic/unresolved ratio inside vs outside the xMHC",
                  fontsize=8.2, fontweight="bold", loc="left", x=-0.22, y=1.02)
 
     fig.suptitle("SPARCAL results separate somatic and unresolved candidates",
