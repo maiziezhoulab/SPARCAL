@@ -389,13 +389,17 @@ matrix (+ a gene-expression baseline) with STAGATE→mclust and scores spatial d
 DLPFC layers (ARI). First full section (151507): sparcal 0.304 > gatk 0.184 > strelka2 0.128.
 Still TODO: caller-vs-caller ARI/NMI and SNV-column Jaccard.
 
-## External benchmark tools — SpatialSNV & SpaceTracer (in progress, 2026-06-13)
+## External benchmark tools — Monopogen, SpatialSNV & SpaceTracer
 
-Two published spatial-SNV callers are being benchmarked against SPARCAL on **P4, P6,
-DCIS1, DCIS2**. Each lives in its own subdir with a dedicated `CLAUDE.md` (and, for
-SpatialSNV, an `On_going.md` job tracker) — **refer to those for full setup, gotchas,
-resources, and live status.**
+Published callers benchmarked against SPARCAL on **P4, P6, DCIS1, DCIS2**. Each lives in
+its own subdir with a dedicated `CLAUDE.md` (and, for SpatialSNV, an `On_going.md` job
+tracker) — **refer to those for full setup, gotchas, resources, and live status.**
+Monopogen result locations are indexed below.
 
+- **Monopogen** (`Monopogen_DCIS{1,2}/` here; P4/P6 under CanLuo's `ST_SNV/Monopogen/`) —
+  **COMPLETE for all four samples, both modules** (germline + somatic), 2026-08-20. Result
+  locations are indexed in full below; the DCIS runs needed a repair after the ACCRE
+  upgrade, written up in `Monopogen_DCIS2/README.md`.
 - **SpatialSNV** (`SpatialSNV/`, env `spatialsnv`) — **FUNCTIONAL.** Mutect2-based caller
   (github.com/YoungLi88/SpatialSNV). chr22 smoke test passed; **4 whole-genome runs
   launched 2026-06-13** (jobs 11869087 dcis1 / 11869088 dcis2 / 11869090 p4 / 11869091 p6).
@@ -414,6 +418,67 @@ resources, and live status.**
   stands without it: Strelka2, GATK, Monopogen, SpatialSNV. (A second, partial v2.0.0-CLI
   clone also exists at `snv_calling/SpaceTracer/` — pick one.) Full rationale + status:
   `/data/maiziezhou_lab/leiy4/SpaceTracer/CLAUDE.md` (top DECISION block).
+
+### Monopogen — where every result lives (all 4 samples complete, 2026-08-20)
+
+Monopogen has **two modules** and they produce different things; always say which one a
+number came from.
+  * **germline** — phased genotypes. Per-spot presence requires a CB-tag BAM rescan.
+  * **somatic** — `putativeSNVs`. Already per-spot (cellScan writes ref/alt counts per
+    barcode), so **no rescan** — do not re-derive presence yourself.
+
+**Run trees (raw module output: `out/germline/`, `out/somatic/`, `out/Bam/`)**
+
+| sample | run tree | putative somatic SNVs |
+|---|---|---:|
+| P4_rep1 | `/lfs/archer.accre.vu/…/CanLuo/ST_SNV/Monopogen/P4_rep1` | 4,905 |
+| P4_rep2 | `…/CanLuo/ST_SNV/Monopogen/P4_rep2` | 4,362 |
+| P6_rep1 | `…/CanLuo/ST_SNV/Monopogen/P6_rep1` | 7,373 |
+| P6_rep2 | `…/CanLuo/ST_SNV/Monopogen/P6_rep2` | 6,315 |
+| DCIS1 | `snv_calling/Monopogen_DCIS1` | 44,102 |
+| DCIS2 | `snv_calling/Monopogen_DCIS2` | 42,657 |
+
+Only **rep1** is used for P4/P6 in the benchmark. The DCIS runs are ours (2026-08-19/20);
+P4/P6 are CanLuo's and predate them.
+
+⚠️ **`Monopogen_DCIS{1,2}/` are gitignored** (5.7 GB: BAM symlinks, a 3.4 GB reference,
+per-chromosome output). They exist on disk only — regenerate with their
+`run_germline.slurm` + `run_somatic_array.slurm`. **Read `Monopogen_DCIS2/README.md`
+first**: the ACCRE upgrade silently broke the germline step (`bcftools call` strips the
+`INFO/I16`+`QS` tags the somatic module needs, at every bcftools version), and that README
+records the fix.
+
+**Genome-wide somatic call tables** (DCIS only; P4/P6 are per-chromosome):
+`Monopogen_DCIS{1,2}/out/DCIS{1,2}.putativeSNVs.csv` and `.allSNVs.csv`
+(DCIS1 44,102 / 395,873; DCIS2 42,657 / 345,929). Rebuild: `bin/collect_results.sh`.
+
+**Spot×SNV presence matrices** (benchmark contract: uint8, rows = barcodes,
+cols = `{chrom}_{pos}_{ref}_{alt}`, no `chr`) — under `SPARCAL_Benchmarking/monopogen/`:
+
+| route | files |
+|---|---|
+| germline | `{P4_rep1,P4_rep2,P6_rep1}/*_monopogen_presence_matrix.pkl` |
+| somatic | `{dcis1,dcis2,P6_rep1_som}/*_monopogen_somatic_presence_matrix.pkl` |
+| somatic, full candidate pool | `dcis2/dcis2_monopogen_all_presence_matrix.pkl` |
+
+Builders: `SPARCAL_Benchmarking/monopogen_to_spot_matrix.py` (germline, BAM rescan) and
+`monopogen_somatic_to_spot_matrix.py` (somatic, no rescan).
+
+**Derived analysis**
+- Region-detection ARI + burden/coverage collinearity + the corroboration check:
+  `SPARCAL_Benchmarking/analysis/region_method_benchmark/monopogen_dcis_2026-08-20/RESULTS.md`
+  (start here — it is the written-up version of everything below).
+- 1KGP leakage / COSMIC / per-call support:
+  `data/monopogen_callset_quality_2026-08-20/` (P4, P6, DCIS2) and
+  `…_2026-08-20_dcis1/` (DCIS1, plus `cgc_corroboration.csv`).
+  Script: `scripts/postanalyze/monopogen_callset_quality.py`.
+- SPARCALViewer studies: `SPARCAL_Benchmarking/viewer/dist/studies/DCIS_{1,2}_Monopogen/`
+  (viewer 1.5.1). DCIS1 ships an empty `tumor_groups.csv` — **no pathologist annotation
+  exists for DCIS section 1**, so no ARI is computable there for any method.
+
+⚠️ **`SPARCAL_Benchmarking/` is not a git repo.** Everything above under that tree —
+matrices, benchmark output, viewer studies, both builder scripts — is unversioned on disk.
+
 
 ## Benchmark Results
 
