@@ -427,22 +427,57 @@ number came from.
   * **somatic** — `putativeSNVs`. Already per-spot (cellScan writes ref/alt counts per
     barcode), so **no rescan** — do not re-derive presence yourself.
 
-**Run trees (raw module output: `out/germline/`, `out/somatic/`, `out/Bam/`)**
+**Run trees — all six now live here** (`snv_calling/Monopogen_<sample>/out/`).
+P4/P6 were copied out of CanLuo's `ST_SNV/Monopogen/` on 2026-08-21 so we manage them
+ourselves; the DCIS runs are ours (2026-08-19/20).
 
-| sample | run tree | putative somatic SNVs |
-|---|---|---:|
-| P4_rep1 | `/lfs/archer.accre.vu/…/CanLuo/ST_SNV/Monopogen/P4_rep1` | 4,905 |
-| P4_rep2 | `…/CanLuo/ST_SNV/Monopogen/P4_rep2` | 4,362 |
-| P6_rep1 | `…/CanLuo/ST_SNV/Monopogen/P6_rep1` | 7,373 |
-| P6_rep2 | `…/CanLuo/ST_SNV/Monopogen/P6_rep2` | 6,315 |
-| DCIS1 | `snv_calling/Monopogen_DCIS1` | 44,102 |
-| DCIS2 | `snv_calling/Monopogen_DCIS2` | 42,657 |
+| sample | run tree | germline (phased SNVs) | somatic | unresolved |
+|---|---|---:|---:|---:|
+| P4_rep1 | `Monopogen_P4_rep1` | 68,425 | 4,905 | 86,140 |
+| P4_rep2 | `Monopogen_P4_rep2` | 66,729 | 4,362 | 95,311 |
+| P6_rep1 | `Monopogen_P6_rep1` | 118,279 | 7,373 | 75,349 |
+| P6_rep2 | `Monopogen_P6_rep2` | 126,165 | 6,315 | 53,629 |
+| DCIS1 | `Monopogen_DCIS1` | 181,317 | 44,102 | 315,260 |
+| DCIS2 | `Monopogen_DCIS2` | 173,272 | 42,657 | 271,684 |
 
-Only **rep1** is used for P4/P6 in the benchmark. The DCIS runs are ours (2026-08-19/20);
-P4/P6 are CanLuo's and predate them.
+Only **rep1** is used for P4/P6 in the benchmark; rep2 exists and is unused.
 
-⚠️ **`Monopogen_DCIS{1,2}/` are gitignored** (5.7 GB: BAM symlinks, a 3.4 GB reference,
-per-chromosome output). They exist on disk only — regenerate with their
+Two things about the copied P4/P6 trees: `out/Bam/` is a **symlink** back to CanLuo's
+filtered BAMs (copying them would have duplicated 40 GB for no gain), and
+`*.cell_snv.mat.gz` was excluded — 1.4 GB per sample of regenerable cellScan intermediate
+that nothing downstream reads. Everything else is a byte-for-byte copy, file counts
+verified against the source.
+
+### Germline vs somatic — where each class is
+
+Monopogen does separate them, but never collects the split anywhere; run
+`scripts/postanalyze/monopogen_split_germline_somatic.py --run-dir <tree> --sample <S>`
+and it writes **`<tree>/out/classified/`**:
+
+| file | what it is |
+|---|---|
+| `{S}.germline.csv` | **GERMLINE** — the full phased callset from `out/germline/*.phased.vcf.gz` (chr1-22 SNVs, with GT) |
+| `{S}.somatic.csv` | **SOMATIC** — `putativeSNVs` with all scores (SVM, LD-refine, BAF) |
+| `{S}.germline_scored.csv` | germline loci the somatic module also scored, with its depth/quality columns |
+| `{S}.unresolved.csv` | scored, no germline genotype, not called somatic |
+| `{S}.classes.txt` | the counts above + the disjointness check |
+
+**How the split is defined.** `out/somatic/{chr}.allSNVs.csv` carries a `genotype` column
+holding the Beagle-phased germline GT for that locus (`0|0`, `0|1`, `1|0`, `1|1`) or `.|.`
+where there is none. Germline = has a GT; somatic = in `putativeSNVs`; unresolved = the
+rest. **Verified on all six samples: the intersection of putative-somatic with
+germline-genotyped is exactly 0** — the classes are disjoint by construction, because
+Monopogen resolves panel genotypes before nominating somatic calls.
+
+Note the germline callset (`{S}.germline.csv`) is much larger than
+`{S}.germline_scored.csv`: the somatic module only scores loci clearing its depth floor
+(>=4 ref **and** >=4 alt high-quality bases), so most germline loci are never scored.
+
+⚠️ `out/classified/` is ~145 MB across the six samples and is **gitignored along with the
+rest of the run trees** — regenerate with the script above, it takes seconds.
+
+⚠️ **All `Monopogen_*/` trees are gitignored** (~7 GB total; the DCIS pair alone is 5.7 GB
+of BAM symlinks, a 3.4 GB reference and per-chromosome output). They exist on disk only — regenerate with their
 `run_germline.slurm` + `run_somatic_array.slurm`. **Read `Monopogen_DCIS2/README.md`
 first**: the ACCRE upgrade silently broke the germline step (`bcftools call` strips the
 `INFO/I16`+`QS` tags the somatic module needs, at every bcftools version), and that README
