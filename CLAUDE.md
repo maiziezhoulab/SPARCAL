@@ -508,8 +508,16 @@ Builders: `SPARCAL_Benchmarking/monopogen_to_spot_matrix.py` (germline, BAM resc
   `…_2026-08-20_dcis1/` (DCIS1, plus `cgc_corroboration.csv`).
   Script: `scripts/postanalyze/monopogen_callset_quality.py`.
 - SPARCALViewer studies: `SPARCAL_Benchmarking/viewer/dist/studies/DCIS_{1,2}_Monopogen/`
-  (viewer 1.5.1). DCIS1 ships an empty `tumor_groups.csv` — **no pathologist annotation
-  exists for DCIS section 1**, so no ARI is computable there for any method.
+  (viewer 1.5.3). **Both now ship a pathology ground truth.** DCIS section 1 gained one on
+  2026-08-21 — profile spelling **`GT`** (28 foci, 394 spots), unlike DCIS2's
+  `Ground Truth` and P6's `GroundTruth`; source
+  `viewer/DCIS_1_SPARCAL_1000G_umi_dedup/tumor_groups.csv`. An earlier note here said no
+  DCIS1 annotation existed — that was true when written and is now wrong.
+- DCIS1 region-detection benchmark (includes Monopogen):
+  `SPARCAL_Benchmarking/analysis/region_method_benchmark/dcis1_gt_2026-08-21/`. Best extent
+  ARI: coverage 0.639, **Monopogen somatic 0.629**, SpatialSNV 0.626, SPARCAL somatic 0.625.
+  Unlike DCIS2's foci-only annotation, the DCIS1 GT spans the whole section, so spots
+  outside it are true negatives.
 
 ⚠️ **`SPARCAL_Benchmarking/` is not a git repo.** Everything above under that tree —
 matrices, benchmark output, viewer studies, both builder scripts — is unversioned on disk.
