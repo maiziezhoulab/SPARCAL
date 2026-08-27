@@ -1,0 +1,3 @@
+asset_stem=fig_dlpfc_spatial_signal_mechanism
+font=Arial
+font_path=/panfs/accrepfs.vampire/data/maiziezhou_lab/leiy4/SPARCAL_pnas_2026/fonts/arial/arial.ttf
