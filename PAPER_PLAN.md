@@ -10,6 +10,11 @@ Fig. 4 SPARCALViewer) rather than starting a new one.
 follow-up benchmarking paper. Read that file before writing any sentence that a reviewer could
 attack; it lists exactly which attacks are live.
 
+> **⚠️ Read before working from this plan:** an external referee assessment (2026-08-23) is
+> consolidated in [§8](#8-external-referee-assessment--2026-08-23). It scores the current draft
+> **3.1/10, reject as submitted**, and challenges decisions L3, L4, D2 and D6. The prioritized
+> work queue derived from it is **[PAPER_WORK.md](PAPER_WORK.md)** — start there, not here.
+
 Live job tracker: [On_going.md](On_going.md). Manuscript repo: `/data/maiziezhou_lab/leiy4/SPARCAL_pnas_2026`.
 
 ---
@@ -874,3 +879,111 @@ somatic variant table (`data/somatic_evidence_2026-07-28/`).
   [[project_dlpfc_snv_representation_study]], [[project_dlpfc_ari_regression_codedrift]],
   [[project_exome_filtering]], [[project_sparcal_benchmarking_ecosystem]],
   [[project_paper_benchmark_strategy]].
+
+---
+
+## 8. External referee assessment — 2026-08-23
+
+Full simulated PNAS referee report against `PNAS/PaperDraftGuided.tex` (95,788 B) and
+`PNAS/SI_AppendixGuided.tex`, read as a reviewer with field knowledge. **Full report: [REFEREE_REPORT_2026-08-23.md](REFEREE_REPORT_2026-08-23.md).** The actionable queue
+derived from it is **[PAPER_WORK.md](PAPER_WORK.md)** — that file, not this section, is what to
+work from.
+
+**Verdict: reject as submitted. Overall readiness 3.1/10 for PNAS.**
+
+| criterion | score |
+|---|---|
+| Conceptual advance | 4/10 |
+| Evidence for central claims | 2/10 |
+| Controls | 2/10 |
+| Statistical treatment | 3/10 |
+| Methods & reproducibility | 3/10 |
+| Manuscript readiness | 1/10 |
+| Transparency & self-criticism | **9/10** |
+| Fit for PNAS | 2/10 |
+
+### 8.1 The core structural problem
+
+The manuscript disclaims almost every result it reports — correctly — and after the disclaimers,
+one positive claim is left standing: that the spatially augmented 250-kb representation matches
+gene expression on 10-NN cortical-layer purity (0.856 vs 0.859). **That claim has never been run
+against a coverage or detection control**, while the region-detection section demonstrates that a
+no-SNV coverage baseline wins when one is supplied. The paper therefore proves it knows the
+control is decisive and does not apply it to its own headline.
+
+A referee's question becomes: *what am I being asked to accept as new and true?* On the current
+text there is one sentence, and it is uncontrolled.
+
+### 8.2 Critical findings (block acceptance at any venue)
+
+| ID | Finding |
+|---|---|
+| **C1** | **No coverage/detection control on the DLPFC headline.** A germline-SNV presence matrix is a thresholded function of transcript capture, so layer structure may be gene expression re-derived through a lossy filter. Compounded by STAGATE smoothing on the spatial graph, which partly manufactures kNN purity regardless of input features → PAPER_WORK **P0-1** |
+| **C2** | **Somatic caller uncalibrated.** Top-20% descriptor votes, top-10% somatic quota, per-dataset hand-tuned T_α/T_β, no FDR, no null. Callset size is an analyst choice: 65,655 "somatic" calls in P6 from RNA, 74.8–91.6% on one ALT UMI in one spot → **P0-3** |
+| **C3** | **SparcalNet never evaluated; no component ablated.** No training set, label source, class balance, split, cross-validation, or performance number appears anywhere. Nobody can tell which part of SPARCAL does any work, including whether θ (the CNV/LOH evidence, i.e. the stated thesis) contributes anything. *Note (corrected 2026-08-23):* the paper's "64 and 32 neurons" **is** right — it describes `run_supplimentary_models.py`, the canonical step 5; `run_sparcal_net.py` (100,50) is the unused, buggy one. The live issue is that Methods name neither, so a reader cannot tell which classifier produced the results → **P0-2** |
+| **C4** | **Stage 1 is absent from the submission.** α/β equations and thresholds sit in a live `\iffalse` block; the SI has three figures and no body text. Methods promise UPV BAF analyses that do not exist. UPV — a named output class — is undefined and unassessed. Also the only mention of "the ovarian section", a dataset never introduced → **P0-5** |
+| **C5** | **Four `\cite` commands; 12 references; 8 never cited.** Uncited but used: STAGATE, Beagle, 1000G, spatialLIBD, Ji cSCC, STMut, GraphST. Absent entirely: COSMIC, CGC, CalicoST, mclust, mpileup, Mutect2, inferCNV, UMAP, 10x Visium, SpaceTracer (which the Discussion claims to cite) → **P0-6** |
+| **C6** | **Manuscript unfinished.** Fig. 1 is a placeholder box; Fig. 6's caption says a box plot "remains pending"; Fig. 4's says "Nimbus Sans previews pending Arial"; Fig. 6 is a `v2_2026-07-29` asset predating both the Monopogen DCIS run and the DCIS1 annotation it is captioned with; DCIS1 has no figure at all despite being the only caller-independent, whole-section annotation; Fig. 6 and SI Fig. S3 are the same file; 16 pp. → **P0-7** |
+| **C7** | **Pseudoreplication.** The 12 spatialLIBD sections are 3 donors × 4 sections, adjacent pairs 10 µm apart. Every headline p-value treats n=12. The word "donor" does not appear in the manuscript → **P0-4** |
+
+### 8.3 Major findings
+
+| ID | Finding | → |
+|---|---|---|
+| **M1** | Germline classification is tautological ("by construction, because they are in the 1KGP panel") and its complement — what happened to the other 18–36% — is unreported | P1-6 |
+| **M2** | The one validation these data support is missing: germline concordance vs matched-normal WES. Currently one subordinate clause in the Discussion | **P1-1** ⭐ |
+| **M3** | No mutational spectrum. The first artifact check for RNA-derived variants. 2 of 14 WES-corroborated calls are already A>G | P1-2 |
+| **M4** | "Visium covers ~1% of whole-exome somatic positions" conflates 3′ capture geometry, expression, depth, and allelic dropout. Most exonic mutations are absent from the library at any depth | P1-3 |
+| **M5** | COSMIC result is null after depth adjustment (OR 1.04 P=0.56; 1.00 P=0.95) and absent outside xMHC in DCIS, yet occupies a main figure. Fisher on non-independent variants; no multiple-testing correction | P1-4 |
+| **M6** | xMHC correctly diagnosed then not acted on — exclusion should be primary, inclusion the sensitivity check. No HLA-aware realignment; somatic HLA LOH vs mismapping never distinguished | P1-4 |
+| **M7** | CalicoST circularity: purity is inferred from allele-specific expression in the same BAM that supplies the variants, then used to rank those variants. ε = ζ·δ makes the voting scheme's voters correlated | P1-7 |
+| **M8** | Beagle/1KGP imputation on spatial RNA unvalidated (ASE, NMD, reference bias violate its model); donor/patient ancestry never reported | P1-8 |
+| **M9** | Monopogen's depth-floor explanation is asserted, not demonstrated. One matched-floor run settles it | P1-5 |
+| **M10** | No independent cohort. Four sections, ≤3 tumors; DCIS2 — where SpatialSNV wins — is SpatialSNV's own dataset | P1-9 ⛔ |
+
+### 8.4 Internal inconsistencies found
+
+1. **Discussion says binning gained "approximately 0.14" for all three matrices**; Results give
+   +0.097 / +0.142 / +0.064. The GATK value was applied to all three. **Wrong as written.**
+2. **Viewer scores**: text reports ARI 0.594 / NMI 0.602 / hom 0.625 / comp 0.581 / V 0.602,
+   17-of-28, mean J 0.377; the in-file verification note records `GT vs ours` = 0.604 / 0.575 /
+   0.520 / 0.642 / 0.575, 13-of-28, 0.310. Five of six disagree; a second profile `our_best`
+   exists and is not named.
+3. SPARCAL-vs-GATK reported as P=0.850 in main text and P=0.68 in SI Fig. S2 — different
+   representations, but nothing tells the reader that.
+4. Main-text bin-width account omits 500 kb ×2, 25 kb ×1, 100 kb ×1 and the 100 kb ≈ 250 kb tie.
+5. Methods → SI forward references point at content that does not exist.
+6. Discussion cites a read-quality evidence screen reported nowhere.
+7. **Clean:** every leakage %, WES-overlap fraction, and COSMIC count recomputes exactly.
+
+### 8.5 Decisions this assessment challenges
+
+Recorded so the conflict is explicit rather than discovered later. **These are advisor/user
+decisions and are not overridden by this section** — but each now has a referee-side argument
+against it that should be answered.
+
+- **L3 / D4 (coverage baseline omitted from the region figure)** — already superseded in practice;
+  the guided draft plots and discusses it. §6 guardrail 7 is stale. The referee's point is that
+  the paper carries the liability of the coverage finding without the credit for it.
+- **L4 (coverage benchmark deferred to paper #2)** — the referee reads
+  `PAPER_PLAN_DEPRECATED.md` §1 as the stronger half of the study: a coverage-conditioned test
+  *with a working positive control* (TSK 0.807, epithelial 0.946 beat coverage; no SNV burden from
+  four tools does), STMut at 14,565 gold WES loci giving AUC **0.432** — below chance, with tumor
+  spots carrying *lower* burden — cross-method Jaccard 0.049, and subclone structure at η²(UMI)
+  0.71–0.74. Splitting has produced a paper with the caveats and a paper with the evidence.
+- **D2 (COSMIC as class separation; §4.8 depth-matched contrast not scheduled)** — the referee's
+  position is that since the depth-adjusted contrast is already known to be null, publishing the
+  unadjusted rate as the headline is the weaker position, not the safer one → P1-4.
+- **D6 (report both raw and xMHC-excluded)** — referee wants xMHC-excluded as *primary*.
+
+### 8.6 Venue
+
+- **PNAS, current draft** — reject; likely without review, given Fig. 1 and four citations.
+- **PNAS, fully revised** — poor fit regardless. The result is significant to the spatial-variant
+  community, not to a general readership.
+- **Nature Methods (Analysis)** — plausible only if merged with the parked coverage benchmark and
+  given ground truth (simulation with spiked variants at known VAF/depth/3′ distance), broader
+  tool coverage, and a generalizable detectability model. ~25–35%.
+- **Genome Biology** — strong fit for the honest bounded version. ~65–75%.
+- **Cell Genomics** — underrated middle option. ~45%.
+- A **bioRxiv preprint** establishes priority against SpaceTracer and others and forecloses nothing.
