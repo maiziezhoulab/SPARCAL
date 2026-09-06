@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """fig_germline_concordance (2026-08-27) -- how well SPARCAL's germline pathway
 (a 1KGP lookup-and-refine, NOT a general variant caller) recovers WES-truth
-germline SNPs from RNA, how accurate its genotypes are, whether somatic calls
-are contaminated by leaked common alleles, and whether its somatic calls show
-any depth-matched COSMIC enrichment.
+germline SNPs from RNA, how accurate its genotypes are, and whether somatic
+calls are contaminated by leaked common alleles.
 
 Panels
   a. three-way sensitivity vs RNA depth bin (SPARCAL / GATK / Strelka2), split
@@ -19,11 +18,6 @@ Panels
      candidate space ("leaked" positions), how many are (i) not detected at
      all, (ii) correctly routed to germline, or misassigned to UPV/somatic/
      unresolved. Headline: 0 of 29,882 leaked alleles were misassigned somatic.
-  d. depth-matched COSMIC odds ratios (xMHC excluded) with 95% Wald CIs for
-     somatic vs unresolved catalogue-hit rate, one row per sample. Every CI
-     spans 1.0 -- there is no depth-matched COSMIC enrichment signal once
-     coverage is accounted for.
-
 CLAIM BOUNDARY THAT MUST TRAVEL WITH THIS FIGURE: panels a/b describe SPARCAL's
 1KGP lookup-and-refine germline pathway, not a general de novo germline caller.
 Do not present the panel-allele sensitivity/accuracy numbers as general germline
@@ -34,7 +28,7 @@ Run:
   python scripts/postanalyze/fig_germline_concordance.py
 
 Outputs
-  data/paper_figs_2026-08-27/fig_germline_concordance_panel_{a,b,c,d}_source.csv
+  data/paper_figs_2026-08-27/fig_germline_concordance_panel_{a,b,c}_source.csv
   SPARCAL_pnas_2026/figs/v7_2026-08-27/fig_germline_concordance[_preview].{png,pdf}
 """
 import os
@@ -125,8 +119,7 @@ def load():
     three_way = pd.read_csv(f"{SRC_DIR}/concordance_three_way.csv", dtype={"rna_depth_bin": str})
     by_depth = pd.read_csv(f"{SRC_DIR}/concordance_by_depth.csv", dtype={"rna_depth_bin": str})
     leaked = pd.read_csv(f"{SRC_DIR}/leaked_allele_confusion.csv")
-    cosmic = pd.read_csv(f"{SRC_DIR}/cosmic_depthmatched.csv")
-    return three_way, by_depth, leaked, cosmic
+    return three_way, by_depth, leaked
 
 
 # ---------------------------------------------------------------------------
@@ -224,69 +217,29 @@ def panel_c(ax, leaked):
              fontsize=7.2, handlelength=1.1, borderaxespad=0.2, labelspacing=0.4)
 
 
-# ---------------------------------------------------------------------------
-# Panel d -- depth-matched COSMIC odds ratios, xMHC excluded
-# ---------------------------------------------------------------------------
-def panel_d(ax, cosmic):
-    sub = cosmic[cosmic.xmhc.eq("xmhc_excluded")].drop_duplicates("sample").set_index("sample")
-    sub = sub.reindex(ALL_SAMPLES4)
-    y = np.arange(len(ALL_SAMPLES4))
-    ax.axvline(1.0, color=MUTED, lw=1.3, linestyle=(0, (4, 2)), zorder=1)
-    xerr_lo = sub.logit_odds_ratio - sub.logit_ci_lo
-    xerr_hi = sub.logit_ci_hi - sub.logit_odds_ratio
-    ax.errorbar(sub.logit_odds_ratio, y, xerr=[xerr_lo.values, xerr_hi.values], fmt="D",
-               color=SPARCAL_C, markeredgecolor=INK, markersize=8, elinewidth=1.6, capsize=4, zorder=3)
-    for yi, row in zip(y, sub.itertuples()):
-        ax.text(row.logit_ci_hi + 0.03, yi, f"OR = {row.logit_odds_ratio:.2f} "
-                f"[{row.logit_ci_lo:.2f}, {row.logit_ci_hi:.2f}]", fontsize=7.4, color=INK,
-                va="center", ha="left")
-    ax.set_yticks(y)
-    ax.set_yticklabels(ALL_SAMPLES4, fontsize=8.6)
-    ax.set_ylim(-0.7, len(ALL_SAMPLES4) - 0.3)
-    ax.invert_yaxis()
-    ax.set_xlim(0.75, 1.75)
-    ax.set_xlabel("depth-matched COSMIC odds ratio\n(somatic vs unresolved hit rate, xMHC excluded)",
-                 fontsize=8.4, color=INK, linespacing=1.25)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    for spine in ["left", "bottom"]:
-        ax.spines[spine].set_color(GRID)
-    ax.tick_params(colors=MUTED, labelsize=8.2)
-    ax.grid(axis="x", color=GRID, lw=0.7, zorder=0)
-    ax.set_axisbelow(True)
-    ax.text(0.02, 0.02, "every CI spans 1.0", transform=ax.transAxes, fontsize=7.6, color=MUTED,
-            style="italic", va="bottom", ha="left")
-    return sub.reset_index()[["sample", "logit_odds_ratio", "logit_ci_lo", "logit_ci_hi"]]
-
-
 def main():
-    three_way, by_depth, leaked, cosmic = load()
+    three_way, by_depth, leaked = load()
 
     fig = plt.figure(figsize=(14.5, 9.2))
     gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 1.0], hspace=0.55, wspace=0.42,
                           left=0.055, right=0.97, top=0.90, bottom=0.08)
     ax_a = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])]
     ax_b = [fig.add_subplot(gs[0, 2]), fig.add_subplot(gs[0, 3])]
-    ax_c = fig.add_subplot(gs[1, 0:2])
-    ax_d = fig.add_subplot(gs[1, 2:4])
+    ax_c = fig.add_subplot(gs[1, 0:4])
 
     a_src = panel_a(ax_a, three_way)
     b_src = panel_b(ax_b, by_depth)
     panel_c(ax_c, leaked)
-    d_src = panel_d(ax_d, cosmic)
 
     a_src.to_csv(f"{DERIVED_DIR}/fig_germline_concordance_panel_a_source.csv", index=False)
     b_src.to_csv(f"{DERIVED_DIR}/fig_germline_concordance_panel_b_source.csv", index=False)
     leaked.to_csv(f"{DERIVED_DIR}/fig_germline_concordance_panel_c_source.csv", index=False)
-    d_src.to_csv(f"{DERIVED_DIR}/fig_germline_concordance_panel_d_source.csv", index=False)
 
     ax_a[0].text(-0.22, 1.18, "a", transform=ax_a[0].transAxes, fontsize=13, fontweight="bold",
                 color=INK, va="top", ha="left")
     ax_b[0].text(-0.20, 1.18, "b", transform=ax_b[0].transAxes, fontsize=13, fontweight="bold",
                 color=INK, va="top", ha="left")
     ax_c.text(-0.09, 1.12, "c", transform=ax_c.transAxes, fontsize=13, fontweight="bold",
-             color=INK, va="top", ha="left")
-    ax_d.text(-0.09, 1.12, "d", transform=ax_d.transAxes, fontsize=13, fontweight="bold",
              color=INK, va="top", ha="left")
 
     fig.text(0.055, 0.975, "SPARCAL's germline pathway is a 1KGP lookup-and-refine, not a "

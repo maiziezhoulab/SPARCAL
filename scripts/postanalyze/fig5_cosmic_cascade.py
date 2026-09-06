@@ -10,10 +10,9 @@ Panel (b): the somatic-vs-unresolved contrast as a ratio with 95% CI, RAW and
 
 CRITICAL FRAMING (locked Decision D2, PAPER_PLAN.md Sec 5 / Sec 6):
 This figure shows CLASS SEPARATION only. It is NOT evidence that retained calls
-are cancer-driving -- COSMIC catalogue membership is depth-associated for every
-class alike (logistic cosmic_hit ~ is_somatic + log10(DP): OR 1.04, p=0.56 in
-P4; OR 1.00, p=0.95 in P6 -- see PAPER_PLAN_DEPRECATED.md Sec 3.1). Do not caption
-this figure as validating somatic calls as cancer-relevant.
+are cancer-driving. Every class and caller uses the same COSMIC build and
+allele-exact matching definition. Do not caption this figure as validating
+somatic calls as cancer-relevant.
 
 INPUTS (recomputed here, not hardcoded):
   data/somatic_hits_2026-07-28/cosmic_hits_annotated.csv

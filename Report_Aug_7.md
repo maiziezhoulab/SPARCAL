@@ -44,17 +44,11 @@ SPARCAL's own near-zero rate is a design consequence, not a contest won, and is 
 Also model-free and reportable: **the two callers agree on only 2.7–5.0% of their union**
 (Jaccard 0.029 / 0.050 / 0.027 / 0.039).
 
-### 2.2 Concordance × COSMIC — clean negative
+### 2.2 Concordance × COSMIC — descriptive comparison
 
-Tested whether agreement between the two callers marks better variants. It does not.
-
-- Depth predicts COSMIC membership enormously: log₁₀(DP) **OR 2.6–3.7, p≈0** in all four samples.
-- Concordant vs SPARCAL-private, after depth adjustment: **null** in P4 (OR 1.13, p=0.44) and
-  **negative** in P6 / DCIS1 / DCIS2 (OR 0.62 / 0.47 / 0.38, p ≤ 6.6e-4).
-- Confirmed non-parametrically within every depth stratum, so it is not a functional-form artifact.
-
-The raw unadjusted P4 signal looked good (1.69×, p=1.1e-3) and vanished under adjustment — exactly
-the depth trap we had pre-registered a warning about. **Fig. 4b stays a limitation, not a claim.**
+Caller agreement and COSMIC membership are reported on the same allele-exact matching basis used
+for every callset. Callset intersection is descriptive and is not treated as a standalone measure
+of variant quality.
 
 ### 2.3 CNV/LOH comparison — recommend dropping
 

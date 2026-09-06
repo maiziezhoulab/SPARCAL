@@ -58,7 +58,7 @@ baseline and standard germline callers cannot produce. Answers the ⭐ open ques
 
 **Proposed 3 validation axes (UPV & somatic, with 1kG as negative control):**
 
-1. **COSMIC enrichment gradient (variant-level — cleanest, coverage-free, model-isolating).**
+1. **COSMIC enrichment gradient (variant-level, same-basis external comparison).**
    Fraction of each set that are COSMIC cancer-mutation hits; hypothesis **somatic > UPV > 1kG**
    (1kG germline → should be at background). Enrichment test vs 1kG baseline (and vs random loci of
    matched trinucleotide/mappability). This isolates the classifier from Beagle and needs **no region

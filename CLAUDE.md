@@ -13,9 +13,9 @@ See **[PAPER_PLAN.md](PAPER_PLAN.md)** for the authoritative research plan and p
 is the **SPARCAL modality paper** again — spatial SNV calling guided by CNV/clone context — continuing
 `SPARCAL_pnas_2026/PNAS/PaperDraft.tex`. The claim is *the variants we call make more sense than other
 callers', plus insight into which representation/setting is best*, NOT a win on every metric. Germline
-gets two sections (unbinned variant-set quality; 250-kb-binned representation). Somatic is validated by
-COSMIC cascade + region-detection ARI + specific DNA-confirmed hits — with the coverage/UMI baseline
-deliberately out of scope here.
+gets two sections (unbinned variant-set quality; 250-kb-binned representation). Somatic evidence
+combines a same-basis COSMIC comparison, region-detection ARI, and specific DNA-confirmed hits.
+The coverage/UMI baseline is deliberately out of scope here.
 
 **The coverage-confound / UMI-dominance benchmark is deferred to a second paper** and is parked, with
 every finding that endangers a current claim, in **[PAPER_PLAN_DEPRECATED.md](PAPER_PLAN_DEPRECATED.md)**

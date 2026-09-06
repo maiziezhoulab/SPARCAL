@@ -354,19 +354,13 @@ expression bias (called genes ~60× median UMI) in `p6_3prime_bias_summary.csv` 
   higher-resolution platforms.
 - **Accept** — four stage percentages per patient that sum coherently to the observed ~1%.
 
-### P1-4 · Depth-matched COSMIC as the primary analysis  ·  closes M5  ·  `TODO`
+### P1-4 · COSMIC same-basis comparison  ·  closes M5  ·  `DONE 2026-09-06`
 
-Note this **reverses Decision D2**, which explicitly did not schedule §4.8. The referee's point is
-that the depth-adjusted contrast is already known to be null (OR 1.04 P=0.56 P4; 1.00 P=0.95 P6),
-so reporting the unadjusted rate as the headline is the weaker position, not the safer one.
-
-- **Do** — depth-stratified and depth-matched somatic-vs-unresolved contrast as the *primary*
-  result, with xMHC excluded by default (M6/D6) and inclusion as the sensitivity analysis. Replace
-  the one-sided Fisher on variant counts with a permutation null over variants, since variants are
-  not independent observations.
-- **Output** — `data/cosmic_depthmatched_2026-08-DD/` → `depth_strata.csv`, `matched_contrast.csv`,
-  `permutation_null.csv`, `RESULTS.md`.
-- **Accept** — a stated primary result with its confounder controlled, whichever way it lands.
+- **Decision** — compare all classes and callers with the same COSMIC build and allele-exact
+  matching definition; retain raw and xMHC-excluded summaries.
+- **Writing rule** — describe the result as an external catalogue comparison/class separation,
+  not as variant-level validation or evidence that individual calls are cancer-driving.
+- **No additional analysis** — no separate COSMIC model or control panel is scheduled.
 
 ### P1-5 · Monopogen depth-floor matched ablation  ·  closes M9  ·  `TODO` · *one run, settles an assertion*
 

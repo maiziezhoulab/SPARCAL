@@ -260,18 +260,16 @@ Monotone descending cascade in **all four samples**; kept-somatic beats discarde
 | **HLA/xMHC excluded** (chr6:28–34 Mb) | 1.22× (p=4e-3) | 1.18× (p=1e-3) | 1.11× (p=0.10) | 0.99× (p=0.55) | **holds in cSCC only** |
 | SComatic PON + RNA-editing mask | 1.17× | 1.13× | 1.32× | 1.00× | **do not adopt** — incoherent |
 
-⚠️ **RISK — read [PAPER_PLAN_DEPRECATED.md](PAPER_PLAN_DEPRECATED.md) §3 before writing this.**
-Three independent analyses weaken this result: (i) it does **not** reproduce on the `pre_dedup`
-variant sets (all ratios ≈ 0.93–1.06, ns); (ii) HLA-exclusion **removes the DCIS2 effect entirely**;
-(iii) **depth control nulls it outright** (logistic `cosmic_hit ~ is_somatic + log10 DP` → OR 1.04
-p=0.56 in P4, OR 1.00 p=0.95 in P6; depth-stratified ratios 0.94–1.08 with no consistent somatic
-advantage). See §5 for the decision this forces.
+**Writing decision (user, 2026-09-06):** retain COSMIC as a same-basis external-catalogue
+comparison across classes and callers. Report the raw and xMHC-excluded results consistently and
+do not describe catalogue membership as variant-level validation or evidence of cancer-driving
+calls. The `pre_dedup` sensitivity analysis remains outside the paper because `current` is the
+locked pipeline version.
 
 **MISSING:**
 
 9. Lock **one** burden version for every number in the paper (see §5, Decision D1).
-10. Decide the depth question (§5, Decision D2) — the *only* genuinely dangerous open item in the
-    somatic half of the paper.
+10. Keep the same-basis COSMIC framing synchronized across the manuscript, captions, and SI.
 11. Paper label for the discarded class. Code token is `ambiguous`; suggest **"unresolved
     candidates"** in the manuscript (it is what the class actually is: below the rank cut, not
     proven artifactual).
@@ -582,8 +580,9 @@ via SPARCALViewer (also fixes the stale "407 spots / max 7 hits" Fig. 4 number).
 ### 4.7 Exome-rate table per variant class
 Per sample × class fraction of calls inside exome intervals. Cheap.
 
-### 4.8 ~~Depth-matched COSMIC contrast~~ — **NOT scheduled** (Decision D2)
-We reframe around the depth objection instead of pre-empting it. Do not run.
+### 4.8 Additional COSMIC modeling — **NOT scheduled** (Decision D2)
+The paper uses the same catalogue definition for all classes and callers, with the xMHC-excluded
+comparison reported separately. No additional COSMIC model is required for the paper.
 
 ### 4.9 ⭐ Rebuild the region-detection inputs on `current` matrices (Decision D1) — **DONE 2026-07-28**
 ✅ Rebuilt as `region_method_benchmark/current_2026-07-28/` (driver: `benchmark_current.py`). The
@@ -620,11 +619,11 @@ inconsistency that sank the previous plan. Do this **first**, then build §4.5 o
   reads `data/dcis2_pre_umidedup_2026-06-25/final_matrices/` (§4.9). The `pre_dedup` COSMIC null is
   a version-sensitivity note in [PAPER_PLAN_DEPRECATED.md](PAPER_PLAN_DEPRECATED.md) §3.2, not a
   paper number.
-- **D2 — COSMIC framed as class separation, no cancer-relevance claim.** Keep the cascade figure and
+- **D2 — COSMIC framed as a same-basis class/caller comparison, no cancer-relevance claim.** Keep the cascade figure and
   the monotone ordering; write it as *"the classifier separates the variant classes, and the ordering
   is consistent across four samples"* — **never** *"COSMIC validates our somatic calls as
-  cancer-relevant."* This survives the depth objection (OR 1.04 p=0.56 P4 / 1.00 p=0.95 P6) without
-  losing the panel. §4.8 (depth-matched contrast) is therefore **not** scheduled.
+  cancer-relevant."* Use the same COSMIC build and allele-exact definition throughout; §4.8 does
+  not schedule an additional model.
 - **D3 — Story A headline set: `defined` (1kG-only), promoted to 12 sections** (§4.1). Report
   `sparcal` (1kG+UPV) alongside as the full-pipeline default, so the paper shows both the best
   representation and what the pipeline actually emits. The 1KGP-restricted-vs-1KGP-filtered caveat
@@ -733,16 +732,8 @@ changed and why. Where the two conflict, **this block wins**.
   64–82% of those same positions to germline in the same tissue.
   `data/spatialsnv_callset_quality_2026-08-06/`. Caveat for Methods: SPARCAL is
   not exactly 0% — DCIS2 has 1 leak in 25,154 (0.004%).
-- **NEW NEGATIVE RESULT — cross-method concordance is NOT a confidence axis, so it
-  does not become a claim.** Depth-controlled logistic on COSMIC membership:
-  log10(DP) OR 2.6–3.7 (p≈0) in all four samples, while `concordant` vs
-  SPARCAL-private is null in P4 (OR 1.13, p=0.44) and *negative* in P6/DCIS1/DCIS2
-  (OR 0.62/0.47/0.38, p≤6.6e-4). Confirmed non-parametrically within every depth
-  bin, so it is not a functional-form artifact. The raw unadjusted P4 signal
-  (1.69×, p=1.1e-3) is exactly the depth trap D2 already warns about. **Fig. 4b
-  stays a limitation.** Do not write "concordant calls are worse" either — COSMIC
-  is germline-polluted, so the honest claim is *no usable positive signal*.
-  `data/spatialsnv_concordance_2026-08-06/RESULT.md`.
+- **Cross-method concordance is descriptive, not a confidence axis.** Report overlap/Jaccard on
+  the shared call universe, but do not infer variant quality from callset intersection alone.
 - **The two callers barely agree** (Jaccard 0.027–0.050; 14–42% of SPARCAL's calls,
   2.8–7.2% of SpatialSNV's). This is model-free and reportable on its own.
 - **NEW NEGATIVE RESULT — the CNV/LOH method comparison does not work; recommend
@@ -846,7 +837,8 @@ benchmark to the separate second paper — this is the sentence that keeps this 
 - **Do not splice into `PaperDraft.tex` until Discussion + Conclusions are rewritten too** — the
   existing abstract makes three claims this draft does not support: "consistently more concordant
   than either caller" (binned is a tie, p=0.68), "strong concordance with matched WES" (false — ~1%
-  callability), and COSMIC "supports biological relevance" (depth control nulls it). The draft
+  callability), and COSMIC "supports biological relevance" (catalogue membership is comparative,
+  not driver validation). The draft
   abstract in the comment block fixes all three.
 - The existing **Introduction needs no rewrite** — it already argues modality + CNV-as-calling-evidence,
   which is the new thesis.
@@ -934,7 +926,7 @@ text there is one sentence, and it is uncontrolled.
 | **M2** | The one validation these data support is missing: germline concordance vs matched-normal WES. Currently one subordinate clause in the Discussion | **P1-1** ⭐ |
 | **M3** | No mutational spectrum. The first artifact check for RNA-derived variants. 2 of 14 WES-corroborated calls are already A>G | P1-2 |
 | **M4** | "Visium covers ~1% of whole-exome somatic positions" conflates 3′ capture geometry, expression, depth, and allelic dropout. Most exonic mutations are absent from the library at any depth | P1-3 |
-| **M5** | COSMIC result is null after depth adjustment (OR 1.04 P=0.56; 1.00 P=0.95) and absent outside xMHC in DCIS, yet occupies a main figure. Fisher on non-independent variants; no multiple-testing correction | P1-4 |
+| **M5** | **Resolved by author decision:** retain COSMIC as a same-basis external benchmark across classes/callers, report xMHC exclusion separately, and avoid variant-level validation or driver claims | P1-4 |
 | **M6** | xMHC correctly diagnosed then not acted on — exclusion should be primary, inclusion the sensitivity check. No HLA-aware realignment; somatic HLA LOH vs mismapping never distinguished | P1-4 |
 | **M7** | CalicoST circularity: purity is inferred from allele-specific expression in the same BAM that supplies the variants, then used to rank those variants. ε = ζ·δ makes the voting scheme's voters correlated | P1-7 |
 | **M8** | Beagle/1KGP imputation on spatial RNA unvalidated (ASE, NMD, reference bias violate its model); donor/patient ancestry never reported | P1-8 |
@@ -971,9 +963,8 @@ against it that should be answered.
   four tools does), STMut at 14,565 gold WES loci giving AUC **0.432** — below chance, with tumor
   spots carrying *lower* burden — cross-method Jaccard 0.049, and subclone structure at η²(UMI)
   0.71–0.74. Splitting has produced a paper with the caveats and a paper with the evidence.
-- **D2 (COSMIC as class separation; §4.8 depth-matched contrast not scheduled)** — the referee's
-  position is that since the depth-adjusted contrast is already known to be null, publishing the
-  unadjusted rate as the headline is the weaker position, not the safer one → P1-4.
+- **D2 (COSMIC as a same-basis comparison; no additional model scheduled)** — retained by author
+  decision; use identical catalogue matching across classes/callers and keep claims comparative.
 - **D6 (report both raw and xMHC-excluded)** — referee wants xMHC-excluded as *primary*.
 
 ### 8.6 Venue
