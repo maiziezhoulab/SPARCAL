@@ -64,40 +64,26 @@ DATASET_CONFIGS = {
         "in_tissue_column": 1
     },
     "P4_TUMOR": {
-        "base_path": "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium",
+        "base_path":   "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium",
         "output_base": "/data/maiziezhou_lab/leiy4/snv_calling/data/P4_tumor",
         "spaceranger_dir_template": "spaceranger_align_rep{section_id}_hg19",
-        "spatial_subdir": "Meta_Data",
-        "position_file_patterns": {
-            "1": "GSM4565823_P4_rep1_tissue_positions_list.csv",
-            "2": "GSM4565824_P4_rep2_tissue_positions_list.csv"
-        },
-        "scale_file_patterns": {
-            "1": "GSM4565823_P4_rep1_scalefactors_json.json",
-            "2": "GSM4565824_P4_rep2_scalefactors_json.json"
-        },
-        "image_file_patterns": {
-            "1": "GSM4565823_P4_rep1_tissue_hires_image.png",
-            "2": "GSM4565824_P4_rep2_tissue_hires_image.png"
-        }
+        "spatial_subdir": "P4_Tumor_output/outs/spatial",
+        "position_file_patterns": {"1": "tissue_positions.csv", "2": "tissue_positions.csv"},
+        "scale_file_patterns": {"1": "scalefactors_json.json", "2": "scalefactors_json.json"},
+        "image_file_patterns": {"1": "tissue_hires_image.png", "2": "tissue_hires_image.png"},
+        "has_header": True,
+        "x_flip":     False,
     },
     "P6_TUMOR": {
-        "base_path": "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P6_Visium",
+        "base_path":   "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P6_Visium",
         "output_base": "/data/maiziezhou_lab/leiy4/snv_calling/data/P6_tumor",
         "spaceranger_dir_template": "spaceranger_align_rep{section_id}_hg19",
-        "spatial_subdir": "Meta_Data",
-        "position_file_patterns": {
-            "1": "GSM4565825_P6_rep1_tissue_positions_list.csv",
-            "2": "GSM4565826_P6_rep2_tissue_positions_list.csv"
-        },
-        "scale_file_patterns": {
-            "1": "GSM4565825_P6_rep1_scalefactors_json.json",
-            "2": "GSM4565826_P6_rep2_scalefactors_json.json"
-        },
-        "image_file_patterns": {
-            "1": "GSM4565825_P6_rep1_tissue_hires_image.png",
-            "2": "GSM4565826_P6_rep2_tissue_hires_image.png"
-        }
+        "spatial_subdir": "P6_Tumor_output/outs/spatial",
+        "position_file_patterns": {"1": "tissue_positions.csv", "2": "tissue_positions.csv"},
+        "scale_file_patterns": {"1": "scalefactors_json.json", "2": "scalefactors_json.json"},
+        "image_file_patterns": {"1": "tissue_hires_image.png", "2": "tissue_hires_image.png"},
+        "has_header": True,
+        "x_flip":     False,
     },
     "DCIS": {
         # hg38, two sections: dcis1 / dcis2
@@ -152,6 +138,7 @@ class EnhancedSpatialSNVFilter:
                  kept_variants_path: str = None,
                  clone_labels_file: str = None,
                  cnv_segments_file: str = None,
+                 evidence_mode: str = "full",
                  germline_threshold: float = 0.3,
                  somatic_threshold: float = 0.2):
         """
@@ -171,6 +158,16 @@ class EnhancedSpatialSNVFilter:
         self.kept_variants_path = kept_variants_path
         self.germline_threshold = germline_threshold
         self.somatic_threshold = somatic_threshold
+        self.evidence_mode = evidence_mode
+
+        if evidence_mode not in {"full", "spatial_only_no_calicost"}:
+            raise ValueError(f"Unknown evidence mode: {evidence_mode}")
+        if evidence_mode == "spatial_only_no_calicost" and any(
+                (tumor_purity_file, clone_labels_file, cnv_segments_file)):
+            raise ValueError(
+                "spatial_only_no_calicost must not receive tumor-purity, clone-label, "
+                "or CNV inputs"
+            )
         
         # NEW: CalicoST clone and CNV data (optional)
         self.clone_labels_file = clone_labels_file
@@ -189,6 +186,9 @@ class EnhancedSpatialSNVFilter:
         self.spot_positions = {}  # barcode -> (x, y)
         self.spot_snvs = defaultdict(set)  # barcode -> set of SNVs
         self.tumor_purity = {}  # barcode -> purity (0-1)
+        self.tumor_purity_default = 0.0  # used when an input omits a spot
+        self.has_informative_purity = False
+        self.voting_features = []
         self.spot_neighbors = defaultdict(list)  # barcode -> list of neighbors
         self.snv_ref_alt_map = {}  # snv_key -> (ref, alt)
         self.snv_race = {}  # snv_key -> "defined" or "denovo"
@@ -232,7 +232,10 @@ class EnhancedSpatialSNVFilter:
             'gamma': 0.3    # purity independence
         }
         
-        if self.use_clone_cnv:
+        if self.evidence_mode == "spatial_only_no_calicost":
+            self.weights_somatic = {'zeta': 1.0}
+            logger.info("Using CalicoST-free spatial-only ablation scoring")
+        elif self.use_clone_cnv:
             # When clone+CNV data available, adjust weights
             self.weights_somatic = {
                 'delta': 0.25,    # purity correlation
@@ -400,9 +403,19 @@ class EnhancedSpatialSNVFilter:
                 self.tumor_purity[clean_barcode] = float(purity)
             
             purities = list(self.tumor_purity.values())
+            finite_purities = np.asarray(purities, dtype=float)
+            finite_purities = finite_purities[np.isfinite(finite_purities)]
+            self.has_informative_purity = bool(
+                finite_purities.size >= 2 and np.ptp(finite_purities) > 1e-8
+            )
             logger.info(f"Loaded tumor purity for {len(self.tumor_purity)} spots")
             logger.info(f"Purity stats: min={min(purities):.3f}, "
                        f"max={max(purities):.3f}, mean={np.mean(purities):.3f}")
+            if not self.has_informative_purity:
+                logger.warning(
+                    "Tumor-purity values are absent or constant; purity-derived "
+                    "features delta/epsilon will be excluded from voting"
+                )
             
         except Exception as e:
             logger.error(f"Error loading tumor purity: {e}")
@@ -564,8 +577,9 @@ class EnhancedSpatialSNVFilter:
                 pxl_col = float(row[5])
                 self.spot_positions[bc] = (pxl_col, pxl_row)
         else:
-            # P4/P6: no header; cols: barcode, in_tissue, array_row, array_col, pxl_row, pxl_col
-            df = pd.read_csv(self.positions_file, header=None)
+            # P4/P6: accept both legacy headerless files and current
+            # Space Ranger tissue_positions.csv files with named columns.
+            df = self._read_positions_csv(self.positions_file)
             for _, row in df.iterrows():
                 bc = row[0]
                 if int(row[1]) != 1:
@@ -791,7 +805,7 @@ class EnhancedSpatialSNVFilter:
         purities_without = []
         
         for barcode, snvs in self.spot_snvs.items():
-            purity = self.tumor_purity.get(barcode, 0.0)
+            purity = self.tumor_purity.get(barcode, self.tumor_purity_default)
             
             if variant in snvs:
                 purities_with.append(purity)
@@ -810,7 +824,7 @@ class EnhancedSpatialSNVFilter:
         purities = []
         
         for barcode in self.spot_positions:
-            purity = self.tumor_purity.get(barcode, 0.0)
+            purity = self.tumor_purity.get(barcode, self.tumor_purity_default)
             has_variant = 1 if variant in self.spot_snvs.get(barcode, set()) else 0
             
             purities.append(purity)
@@ -998,6 +1012,9 @@ class EnhancedSpatialSNVFilter:
     
     def calculate_somatic_score(self, variant: str) -> float:
         """Calculate combined somatic score with optional clone+CNV enhancement."""
+        if self.evidence_mode == "spatial_only_no_calicost":
+            return self.calculate_spatial_clustering_score(variant)
+
         # Base components (always calculated)
         s_purity = self.calculate_purity_correlation_score(variant)
         s_cluster = self.calculate_spatial_clustering_score(variant)
@@ -1108,28 +1125,34 @@ class EnhancedSpatialSNVFilter:
         VOTE_TOP_FRACTION   = 0.20   # top 20% per feature → 1 vote
         SOMATIC_TOP_FRACTION = 0.10  # top 10% by votes → somatic
 
-        # Determine which features participate in voting
-        voting_features = ['delta', 'epsilon', 'zeta']
+        # Determine which features participate in voting. The ablation uses
+        # zeta only; full mode adds each CalicoST-derived feature only when its
+        # underlying input is informative.
+        voting_features = ['zeta']
+        if self.has_informative_purity:
+            voting_features = ['delta', 'epsilon', 'zeta']
         if self.use_clone_cnv:
             voting_features.append('theta')
+        self.voting_features = voting_features
         n_features = len(voting_features)
         logger.info(f"Stage 2 — Somatic voting with {n_features} features: {voting_features}")
 
         # Calculate somatic feature scores for all non-germline denovo variants
         feature_scores = {f: {} for f in voting_features}
         for variant in non_germline:
-            s_purity  = self.calculate_purity_correlation_score(variant)
             s_cluster = self.calculate_spatial_clustering_score(variant)
-            s_clone_specific = s_cluster * s_purity
-            feature_scores['delta'][variant]   = s_purity
-            feature_scores['zeta'][variant]    = s_cluster
-            feature_scores['epsilon'][variant] = s_clone_specific
+            feature_scores['zeta'][variant] = s_cluster
+            if self.has_informative_purity:
+                s_purity = self.calculate_purity_correlation_score(variant)
+                s_clone_specific = s_cluster * s_purity
+                feature_scores['delta'][variant] = s_purity
+                feature_scores['epsilon'][variant] = s_clone_specific
+                self.variant_scores[variant]['delta'] = s_purity
+                self.variant_scores[variant]['epsilon'] = s_clone_specific
             if self.use_clone_cnv:
                 feature_scores['theta'][variant] = self.calculate_cnv_consistency_score(variant)
             # Store in variant_scores for downstream use / plotting
-            self.variant_scores[variant]['delta']   = s_purity
-            self.variant_scores[variant]['zeta']    = s_cluster
-            self.variant_scores[variant]['epsilon'] = s_clone_specific
+            self.variant_scores[variant]['zeta'] = s_cluster
             if self.use_clone_cnv:
                 self.variant_scores[variant]['theta'] = feature_scores['theta'][variant]
 
@@ -1141,8 +1164,12 @@ class EnhancedSpatialSNVFilter:
             if not scores:
                 continue
             n_voters = max(1, int(len(scores) * VOTE_TOP_FRACTION))  # floor, not ceil
-            top_variants = sorted(scores.keys(),
-                                  key=lambda v: scores[v], reverse=True)[:n_voters]
+            top_variants = sorted(
+                scores,
+                key=lambda variant: (
+                    -np.nan_to_num(scores[variant], nan=-np.inf), variant
+                ),
+            )[:n_voters]
             for variant in top_variants:
                 vote_counts[variant] += 1
 
@@ -1157,9 +1184,19 @@ class EnhancedSpatialSNVFilter:
         #   Gate 1 — must have received at least 1 vote
         #   Gate 2 — among voted variants, take at most top 10% of non_germline by vote count
         somatic_cap = max(1, int(len(non_germline) * SOMATIC_TOP_FRACTION))  # floor = strict 10%
+        # Resolve vote-count ties by summed feature evidence, then variant key.
+        # This is especially important in the one-feature ablation, where every
+        # top-zeta candidate otherwise has exactly one vote.
+        tie_break_scores = {
+            variant: sum(
+                np.nan_to_num(feature_scores[feature].get(variant, 0.0), nan=0.0)
+                for feature in voting_features
+            )
+            for variant in non_germline
+        }
         voted_variants = sorted(
             [v for v in non_germline if vote_counts[v] >= 1],
-            key=lambda v: vote_counts[v], reverse=True
+            key=lambda v: (-vote_counts[v], -tie_break_scores[v], v),
         )
         somatic_set = set(voted_variants[:somatic_cap])
 
@@ -1250,18 +1287,33 @@ class EnhancedSpatialSNVFilter:
                 if race == "defined":
                     feats = "\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA"
                 else:
-                    f_unif  = self.calculate_spatial_uniformity_score(variant)
-                    f_prev  = self.calculate_global_prevalence_score(variant)
-                    f_indep = self.calculate_purity_independence_score(variant)
-                    f_pcorr = self.calculate_purity_correlation_score(variant)
-                    f_clust = self.calculate_spatial_clustering_score(variant)
-                    f_csprx = f_clust * f_pcorr  # clone-specific proxy = ζ × δ product
+                    # Reuse the exact scores already calculated during
+                    # classification. This avoids a second O(variants × spots)
+                    # pass, especially in the large P6 ablation.
+                    f_unif = scores.get('alpha')
+                    if f_unif is None:
+                        f_unif = self.calculate_spatial_uniformity_score(variant)
+                    f_prev = scores.get('beta')
+                    if f_prev is None:
+                        f_prev = self.calculate_global_prevalence_score(variant)
+                    f_clust = scores.get('zeta')
+                    if f_clust is None:
+                        f_clust = self.calculate_spatial_clustering_score(variant)
+                    if self.has_informative_purity:
+                        f_indep = self.calculate_purity_independence_score(variant)
+                        f_pcorr = scores.get('delta')
+                        if f_pcorr is None:
+                            f_pcorr = self.calculate_purity_correlation_score(variant)
+                        f_csprx = scores.get('epsilon', f_clust * f_pcorr)
+                    else:
+                        f_indep = f_pcorr = f_csprx = float('nan')
                     f_cenr  = (self.calculate_clone_enrichment_score(variant)
                                if self.use_clone_cnv else float('nan'))
                     f_cnv   = (self.calculate_cnv_consistency_score(variant)
                                if self.use_clone_cnv else float('nan'))
-                    feats = (f"\t{f_unif:.4f}\t{f_prev:.4f}\t{f_indep:.4f}"
-                             f"\t{f_pcorr:.4f}\t{f_clust:.4f}\t{f_csprx:.4f}"
+                    fmt = lambda value: ('NA' if np.isnan(value) else f'{value:.4f}')
+                    feats = (f"\t{f_unif:.4f}\t{f_prev:.4f}\t{fmt(f_indep)}"
+                             f"\t{fmt(f_pcorr)}\t{f_clust:.4f}\t{fmt(f_csprx)}"
                              f"\t{f_cenr if not (isinstance(f_cenr, float) and np.isnan(f_cenr)) else 'NA'}"
                              f"\t{f_cnv if not (isinstance(f_cnv, float) and np.isnan(f_cnv)) else 'NA'}")
 
@@ -1305,6 +1357,13 @@ class EnhancedSpatialSNVFilter:
     
     def save_vcf_outputs(self):
         """Save variants to VCF files, split by classification and race."""
+        # Precompute spot prevalence once. Re-scanning every spot for every
+        # variant made P6 VCF writing quadratic in practice.
+        variant_spot_counts = defaultdict(int)
+        for spot_variants in self.spot_snvs.values():
+            for variant in spot_variants:
+                variant_spot_counts[variant] += 1
+
         # Define all variant sets with their directories and filenames
         variant_configs = [
             ("germline_defined", self.germline_defined, self.germline_defined_dir),
@@ -1349,7 +1408,7 @@ class EnhancedSpatialSNVFilter:
                     ref, alt = self.snv_ref_alt_map.get(variant, ("N", "N"))
                     
                     # Calculate INFO fields
-                    ns = sum(1 for snvs in self.spot_snvs.values() if variant in snvs)
+                    ns = variant_spot_counts.get(variant, 0)
                     total_spots = len(self.spot_positions)
                     af = ns / total_spots if total_spots > 0 else 0
                     
@@ -1362,10 +1421,11 @@ class EnhancedSpatialSNVFilter:
                     else:  # ambiguous
                         score = max(scores['germline'], scores['somatic'])
                     
-                    purity_corr = self.calculate_purity_correlation_score(variant)
+                    purity_corr = (f"{self.calculate_purity_correlation_score(variant):.4f}"
+                                   if self.has_informative_purity else ".")
                     race = self.snv_race.get(variant, "unknown")
                     
-                    info = f"NS={ns};AF={af:.4f};SCORE={score:.4f};PURITY_CORR={purity_corr:.4f};RACE={race}"
+                    info = f"NS={ns};AF={af:.4f};SCORE={score:.4f};PURITY_CORR={purity_corr};RACE={race}"
                     
                     # Ensure chr prefix
                     if chrom.startswith("chr"):
@@ -1392,12 +1452,14 @@ class EnhancedSpatialSNVFilter:
             f.write(f"Dataset: {self.dataset}\n")
             f.write(f"Section ID: {self.section_id}\n")
             f.write(f"Quality Filter: {self.quality_filter}\n")
+            f.write(f"Evidence Mode: {self.evidence_mode}\n")
             f.write(f"Tumor Purity File: {self.tumor_purity_file}\n\n")
             
             f.write("Parameters:\n")
             f.write(f"  Neighbor distance: {self.neighbor_distance}\n")
             f.write(f"  Min expression (germline): {self.min_expression_germline}\n")
-            f.write(f"  Min expression (somatic): {self.min_expression_somatic}\n\n")
+            f.write(f"  Min expression (somatic): {self.min_expression_somatic}\n")
+            f.write(f"  Somatic voting features: {','.join(self.voting_features)}\n\n")
             
             f.write("Input Data:\n")
             f.write(f"  Total spots: {len(self.spot_positions)}\n")
@@ -1464,16 +1526,19 @@ class EnhancedSpatialSNVFilter:
         """Run the complete enhanced spatial filtering pipeline."""
         logger.info("Starting enhanced spatial SNV filtering with tumor purity...")
         
-        # 1. Load tumor purity
-        self.load_tumor_purity()
+        # 1. Load tumor purity unless this is the explicit CalicoST ablation.
+        if self.evidence_mode == "full":
+            self.load_tumor_purity()
+        else:
+            logger.info("Skipping tumor-purity loading in spatial-only CalicoST ablation")
         
         # 1b. Load clone labels and CNV segments if available
-        if self.use_clone_cnv:
+        if self.evidence_mode == "full" and self.use_clone_cnv:
             self.load_clone_labels()
             self.load_cnv_segments()
             logger.info("Clone+CNV integration enabled")
         else:
-            logger.info("Using purity-only mode (no clone/CNV data)")
+            logger.info("Clone/CNV integration disabled")
         
         # 2. Load spatial positions
         self.load_spot_positions()
@@ -1539,6 +1604,10 @@ Examples:
                        help='Path to CalicoST clone_labels.tsv (enables clone-based scoring)')
     parser.add_argument('--cnv_segments', default=None,
                        help='Path to CalicoST cnv_seglevel.tsv (enables CNV-based scoring)')
+    parser.add_argument('--evidence_mode', default='full',
+                       choices=['full', 'spatial_only_no_calicost'],
+                       help='full uses available CalicoST evidence; spatial_only_no_calicost '
+                            'is the explicit ablation and uses zeta only')
     
     # Optional arguments
     parser.add_argument('--output_dir', default=None,
@@ -1594,6 +1663,7 @@ Examples:
         kept_variants_path=args.kept_variants,
         clone_labels_file=args.clone_labels,
         cnv_segments_file=args.cnv_segments,
+        evidence_mode=args.evidence_mode,
         germline_threshold=args.germline_threshold,
         somatic_threshold=args.somatic_threshold
     )

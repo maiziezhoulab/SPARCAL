@@ -11,9 +11,9 @@
 #   NOTE: like P6, step 1 wants barcode_file GSM4565823_barcodes.tsv.GZ but disk may
 #         have the uncompressed .tsv — `gzip -k …/Meta_Data/GSM4565823_barcodes.tsv` first.
 # =============================================================================
-#SBATCH --job-name=umidedup_split_P4r1
-#SBATCH --output=slurm_output/P4_tumor/umidedup_split_P4r1-%j.out
-#SBATCH --error=slurm_output/P4_tumor/umidedup_split_P4r1-%j.err
+#SBATCH --job-name=umidedup_split_P4
+#SBATCH --output=slurm_output/P4_tumor/umidedup_split_P4-%j.out
+#SBATCH --error=slurm_output/P4_tumor/umidedup_split_P4-%j.err
 #SBATCH --time=48:00:00
 #SBATCH --account=maiziezhou_lab_phd_int
 #SBATCH --partition=interactive
@@ -25,39 +25,86 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=yuqi.lei@vanderbilt.edu
 
-set -o pipefail
-echo "SLURM_JOBID: ${SLURM_JOBID:-NA}  Start: $(date)"
+set -euo pipefail
+
+SECTION_ID=${1:-1}
+case "$SECTION_ID" in
+    1|2) ;;
+    *) echo "ERROR: section_id must be 1 or 2 (got: $SECTION_ID)"; exit 2 ;;
+esac
+
+echo "SLURM_JOBID: ${SLURM_JOBID:-NA}  P4 section: ${SECTION_ID}  Start: $(date)"
 
 UMI=/data/maiziezhou_lab/download_yuqi/leiy4/anaconda3/envs/SpaceTracer/bin/umi_tools
 SAMTOOLS=/data/maiziezhou_lab/download_yuqi/leiy4/anaconda3/envs/spatialsnv/bin/samtools  # v1.23.1 (split -d)
 THREADS=16
 
-OUTS=/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium/spaceranger_align_rep1_hg19/P4_Tumor_output/outs
+OUTS=/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium/spaceranger_align_rep${SECTION_ID}_hg19/P4_Tumor_output/outs
 POSSORTED=$OUTS/possorted_genome_bam.bam
 DEDUP=$OUTS/possorted_genome_bam.dedup.bam
 SPLITDIR=$OUTS/split_BAM
+MARKER=$OUTS/.sparcal_umi_dedup_complete
+LOG=$OUTS/umidedup_rep${SECTION_ID}.log
 
 mkdir -p slurm_output/P4_tumor
-for f in "$POSSORTED" "$UMI" "$SAMTOOLS"; do [ -e "$f" ] || { echo "ERROR: missing $f"; exit 1; }; done
-[ -f "$POSSORTED.bai" ] || $SAMTOOLS index -@ $THREADS "$POSSORTED"
+for f in "$POSSORTED" "$UMI" "$SAMTOOLS"; do
+    [ -e "$f" ] || { echo "ERROR: missing $f"; exit 1; }
+done
+"$SAMTOOLS" quickcheck "$POSSORTED"
 
-# preserve any existing (non-deduped) split_BAM rather than clobber it
-if [ -d "$SPLITDIR" ] && [ -n "$(ls "$SPLITDIR"/*.bam 2>/dev/null)" ]; then
-    mv "$SPLITDIR" "${SPLITDIR}.nodedup_bak.$(date +%s)"
+split_count=0
+if [ -d "$SPLITDIR" ]; then
+    split_count=$(find "$SPLITDIR" -maxdepth 1 -type f -name '*.bam' ! -name '_nobarcode.bam' -size +0c | wc -l)
 fi
+if [ -s "$MARKER" ] && [ -s "$DEDUP" ] && [ "$split_count" -gt 0 ]; then
+    echo "[skip] completed UMI-dedup outputs already exist: $MARKER"
+    exit 0
+fi
+
+[ -f "$POSSORTED.bai" ] || "$SAMTOOLS" index -@ "$THREADS" "$POSSORTED"
+
+backup_tag="pre_rerun_$(date +%Y%m%d_%H%M%S).${SLURM_JOB_ID:-manual}"
+for path in "$DEDUP" "$DEDUP.bai" "$SPLITDIR" "$LOG" "$MARKER"; do
+    if [ -e "$path" ]; then
+        mv "$path" "${path}.${backup_tag}"
+        echo "[backup] $path -> ${path}.${backup_tag}"
+    fi
+done
 mkdir -p "$SPLITDIR"
 
 echo "[1] umi_tools dedup  $(date)"
-$UMI dedup -I "$POSSORTED" --per-cell \
+"$UMI" dedup -I "$POSSORTED" --per-cell \
     --extract-umi-method=tag --cell-tag=CB --umi-tag=UB --method=directional \
-    --log="$OUTS/umidedup.log" -S "$DEDUP"
+    --log="$LOG" -S "$DEDUP"
 [ -s "$DEDUP" ] || { echo "ERROR: dedup BAM not produced"; exit 1; }
-$SAMTOOLS index -@ $THREADS "$DEDUP"
-echo "    reads: pre=$($SAMTOOLS view -c -@ $THREADS "$POSSORTED")  post=$($SAMTOOLS view -c -@ $THREADS "$DEDUP")"
+"$SAMTOOLS" quickcheck "$DEDUP"
+"$SAMTOOLS" index -@ "$THREADS" "$DEDUP"
+pre_reads=$("$SAMTOOLS" view -c -@ "$THREADS" "$POSSORTED")
+post_reads=$("$SAMTOOLS" view -c -@ "$THREADS" "$DEDUP")
+echo "    reads: pre=$pre_reads  post-dedup=$post_reads"
 
 echo "[2] samtools split -d CB -M 6000  $(date)"
-$SAMTOOLS split -@ $THREADS -d CB -M 6000 -f "$SPLITDIR/%!.bam" -u "$SPLITDIR/_nobarcode.bam" "$DEDUP"
+"$SAMTOOLS" split -@ "$THREADS" -d CB -M 6000 \
+    -f "$SPLITDIR/%!.bam" -u "$SPLITDIR/_nobarcode.bam" "$DEDUP"
 
 echo "[3] index per-spot BAMs  $(date)"
-ls "$SPLITDIR"/*.bam | grep -v '_nobarcode.bam' | xargs -P $THREADS -I{} "$SAMTOOLS" index {}
-echo "[done] split_BAM bams: $(ls "$SPLITDIR"/*.bam | grep -vc _nobarcode)   $(date)"
+find "$SPLITDIR" -maxdepth 1 -type f -name '*.bam' ! -name '_nobarcode.bam' -print0 \
+    | xargs -0 -r -P "$THREADS" -n 1 "$SAMTOOLS" index -@ 1
+split_count=$(find "$SPLITDIR" -maxdepth 1 -type f -name '*.bam' ! -name '_nobarcode.bam' -size +0c | wc -l)
+[ "$split_count" -gt 0 ] || { echo "ERROR: no per-spot BAMs were produced"; exit 1; }
+
+{
+    echo "status=complete"
+    echo "sample=P4"
+    echo "section_id=$SECTION_ID"
+    echo "source_bam=$POSSORTED"
+    echo "dedup_bam=$DEDUP"
+    echo "pre_reads=$pre_reads"
+    echo "post_reads=$post_reads"
+    echo "split_bams=$split_count"
+    echo "completed_at=$(date --iso-8601=seconds)"
+    echo "slurm_job_id=${SLURM_JOB_ID:-NA}"
+} > "${MARKER}.tmp"
+mv "${MARKER}.tmp" "$MARKER"
+
+echo "[done] split_BAM bams: $split_count  marker: $MARKER  $(date)"
