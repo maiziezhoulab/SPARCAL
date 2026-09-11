@@ -2,9 +2,38 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Weekly report / record convention (READ FIRST for any analysis work)
+
+Research output is organised in **weekly cycles**. A cycle begins after the Friday
+group meeting; the user announces the start. Each cycle gets two files in
+`report/`, named by that Friday's date (`MM_DD_report.md`, `MM_DD_record.md`):
+
+| File | Language | Holds |
+|---|---|---|
+| `report/MM_DD_report.md` | English | The week's **results** — tables and figures, with paths/links to the raw outputs that produced them |
+| `report/MM_DD_record.md` | Chinese or English | The week's **experimental plans, discussion, and reasoning**, including directions that turned out wrong |
+
+Rules:
+
+- **Record every result worth discussing — positive *and* negative.** A cleanly
+  demonstrated negative result (a hypothesis excluded, a feature shown
+  uninformative) belongs in the report exactly like a positive one; it is what
+  stops the next cycle from repeating the work.
+- `record.md` faithfully preserves the discussion and past results. It takes over
+  the *history* role that `On_going.md` used to carry.
+- Keep a **corrections table** in `record.md`: judgements that were later
+  overturned, and the evidence that overturned them. This is what prevents
+  re-deriving a retracted conclusion.
+- `report/` is **gitignored** — it is working output, not repository content.
+- The first cycle is `09_11_report.md` / `09_11_record.md` (2026-09-11).
+
 ## Ongoing Tasks
 
-See [On_going.md](On_going.md) for the live task list (active SLURM jobs, expected outputs, completed work).
+[On_going.md](On_going.md) is now **short and live-only**: jobs currently running on
+the cluster, and results that just landed and are not yet analysed. **Clear an entry
+as soon as its analysis is done** — the finished content moves into that week's
+`report/` files. Keep this file readable at a glance; it is not an archive.
+
 When the user says **"check ongoing tasks"**, read that file, run `squeue` to check job status, inspect output files, and update the file in place.
 
 ## ⭐ Current paper direction (READ FIRST) — 2026-07-28 (advisor)
