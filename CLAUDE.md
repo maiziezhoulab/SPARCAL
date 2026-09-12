@@ -2,6 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## UPV — the default route (v1, 2026-09-12)
+
+The UPV class is produced by the Stage-1 spatial gate and then **annotated** by
+[`scripts/6_spatial_filter/upv_v1_annotate.py`](scripts/6_spatial_filter/upv_v1_annotate.py),
+which is the default post-processing step. Full rationale and the experiments
+behind it: **[`doc/UPV_design_v1.md`](doc/UPV_design_v1.md)**.
+
+- **Membership is unchanged** from the Stage-1 gate. A learned classifier trained
+  on gnomAD-corroborated positives reached only AUC 0.665-0.678 on the confident
+  set, with a training label that is ~95% positional coincidence, so there is no
+  evidence to justify changing which variants are UPV.
+- v1 adds three tiers, in this order (**do not reorder**): `editing` (catalogue
+  hit) -> `confident` (ADP>=50) -> `low_depth`. Editing must be split out before
+  any allelic judgement because RNA editing counterfeits het-like VAF.
+- New INFO: `ADP`, `VAFR`, `IS_EDIT`, `UPV_TIER`. Writes `upv_v1.vcf.gz`;
+  **never overwrites `germline_denovo.vcf.gz`**.
+- Only the `confident` tier is reported, compared and calibrated. The other tiers
+  are called but carry no claim.
+
+Two rules that follow from the validation and are easy to get wrong:
+
+- **Clustering claims must use the 1kG-defined set, not 1kG+UPV.** At 250 kb bin
+  1kG+UPV is significantly *worse* than GATK (P=0.0425) while 1kG-defined ties it
+  (P=0.68) and beats Strelka2 (P=0.0010). UPVs are spatially uniform by
+  definition, so they cannot aid a spatial clustering representation.
+- **Never equate gnomAD hit counts with germline counts.** Correct by expected
+  carriage (`2f` summed) and rescale against the panel's hits/E ratio (1.6-2.0);
+  the raw counts overestimate by 3-10x.
+
 ## Weekly report / record convention (READ FIRST for any analysis work)
 
 Research output is organised in **weekly cycles**. A cycle begins after the Friday
