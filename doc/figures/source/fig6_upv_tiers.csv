@@ -1,0 +1,17 @@
+sample,tier,n,fraction
+P4,confident,1472,0.1551
+P4,editing,549,0.0578
+P4,low_depth,7470,0.7871
+P4,total,9491,1.0
+P6,confident,256,0.1468
+P6,editing,96,0.055
+P6,low_depth,1392,0.7982
+P6,total,1744,1.0
+DCIS1,confident,3242,0.061
+DCIS1,editing,15743,0.2964
+DCIS1,low_depth,34135,0.6426
+DCIS1,total,53120,1.0
+DCIS2,confident,3002,0.0826
+DCIS2,editing,10212,0.2811
+DCIS2,low_depth,23109,0.6362
+DCIS2,total,36323,1.0

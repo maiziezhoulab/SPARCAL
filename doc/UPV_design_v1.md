@@ -75,8 +75,9 @@ panel 漏掉、80 万人的 gnomAD 捕获的那一类。
 
 | 样本 | 初版报告 | **校正后** | 占比 | WES 独立估计 |
 |---|---:|---:|---:|---:|
-| DCIS1 | 9,688 (18.2%) | **~1,430** | 2.7% | 无 |
-| P4 | 543 (5.7%) | **~190** | 2.0% | 1.45% |
+| DCIS1 | 9,688 (18.2%) | **~1,444** | 2.7% | 无 |
+| DCIS2 | 7,086 (19.5%) | **~1,284** | 3.5% | 无 |
+| P4 | 543 (5.7%) | **~192** | 2.0% | 1.55% |
 | P6 | 110 (6.3%) | **~50** | 2.9% | 1.94% |
 
 校正后四样本收敛到 **2–4%**，且 **P4/P6 与 matched-normal WES 吻合**（校正前不吻合）。
@@ -200,26 +201,152 @@ $PY scripts/6_spatial_filter/upv_v1_annotate.py --root data/P6_tumor/1 --build h
 
 ---
 
-## 5. 图（现有 + 建议新增）
+## 5. 图（advisor 讨论用）
 
-### 现有可直接用的
-- `data/dlpfc/clustering_benchmark/ari_matrix_mean.csv` → 250 kb bin ARI 箱线图
-  （生成器 `scripts/postanalyze/suppA_dlpfc_germline_ari.py`，当前只画了 1kG-defined，
-  需加 1kG+UPV 一列以完整呈现 §2.9）
+生成器：[`scripts/postanalyze/upv_v1_figures.py`](../scripts/postanalyze/upv_v1_figures.py)
+（`--plot-only` 可跳过计算，直接从 source 表重绘）。每张图的绘图数值都写在
+[`figures/source/`](figures/source/) 下的 CSV 中。PDF 已确认嵌入 licensed Arial。
 
-### 建议新增（数据均已就位）
-1. **VAF vs 深度收敛图**（§2.5）——panel germline 的 het-like 比例随 ADP 上升曲线。
-   这是 allelic dropout 机制最直观的一张图，也是 confident set 阈值的依据。
-   数据：`data/dnafree_2026-09-08/validation/vaf_by_depth_out.txt`
-2. **gnomAD 富集 + AF 组成图**（§2.3）——各类 enrichment 柱状 + 命中 AF 分布。
-   数据：`data/dnafree_2026-09-08/track_b/gnomad/`
-3. **期望携带数校正图**（§2.4）——hits vs E[carried]，panel 作对角参考线。
-   数据：`data/germline_model_2026-09-12/expected_carriage_out.txt`
-4. **substitution spectrum 对比图**（§2.2）——四样本各类的 96/6 通道谱。
-   数据：`data/dnafree_2026-09-08/track_c_somatic/out/*.features.tsv.gz`
+阅读顺序建议：**图 1 → 6 → 4 → 2 → 3 → 5**——先讲为什么需要分层（机制），再讲分层结果，
+再讲 UPV 是什么，最后讲它的价值与边界。
 
-绘图须遵循 `SPARCAL_pnas_2026/CLAUDE.md` 的 house style（Arial gate、无标题、
-dpi=300、pdf+png、方法配色固定）。
+---
+
+### 图 1 · Allelic dropout 决定了 VAF 何时可解释
+
+![fig1](figures/upv_v1_fig1_allelic_dropout.png)
+
+**Caption (EN).** **Observed VAF of known germline converges to the het/hom bimodal
+shape only above allelic depth ~50.** Fraction of sites that are het-like
+(|VAF−0.5|<0.15) or hom-like (VAF>0.9), by allelic depth (ADP = ref+alt reads from
+I16), for 1KGP panel-defined germline (known true; blue), UPV (violet) and
+ambiguous (gray). (a) DCIS1. (b) P4. Panel germline reads 91% hom-like at ADP 1–3
+(DCIS1) purely through allelic dropout — a het site yields a single allele with
+probability 1.0, 0.5 and 0.25 at ADP 1, 2 and 3 — and rises monotonically to
+51% het-like at ADP≥200. Dotted line: ADP=50, the UPV v1 confident-tier boundary.
+Bins with <50 sites omitted. P6 and DCIS2 behave identically
+(het-like at ADP 1–3 / ≥200: P6 5.3%/47.9%; DCIS2 4.2%/51.1%).
+
+**讨论要点（中文）.**
+- 单调收敛 → 是**采样**（allelic dropout）而非生物学（ASE/imprinting）。数据已 UMI 去重。
+- **53% 的 panel germline 位点 ADP 只有 1–3**，所以全深度汇总的 allelic balance 几乎无信息
+  （可分性 AUC 0.530）。
+- (a) 中 ambiguous 在 ADP 50–199 冲到 49.7% het-like，**不是 germline 信号**：该深度层
+  **74.9%** 是 RNA editing catalogue 命中（DCIS2 同层 69.1%；editing 效率 10–50%，VAF 恰好落进 het 窗口）。这正是 v1 必须
+  **先分出 editing、再看 allelic 证据**的原因。
+- 此图**不**说明 UPV 中有多少是 germline；它只界定 VAF 在什么深度下有意义。
+
+---
+
+### 图 2 · gnomAD corroboration：富集真实存在，且集中在罕见变异
+
+![fig2](figures/upv_v1_fig2_gnomad_corroboration.png)
+
+**Caption (EN).** **UPVs are enriched for exact gnomAD alleles above a position-matched
+null, and the corroborated alleles are predominantly rare.** (a) Fraction of calls
+whose exact REF>ALT is present in gnomAD (filled) against the permuted-ALT null —
+the rate at which the other possible ALTs at the same positions are present (open).
+Numbers: UPV enrichment (exact/null). The 1KGP panel control is 95.0–95.3% (cSCC,
+gnomAD v2.1.1) and 99.95% (DCIS, v4.1) and is omitted for scale. (b) Allele
+frequency of the gnomAD alleles matched by UPV calls. Builds are never mixed
+(GRCh37→v2.1.1, GRCh38→v4.1).
+
+**讨论要点（中文）.**
+- UPV 富集 **2.23–2.48×**，四样本一致；permuted-ALT null 控制了位点本身的可变性与
+  catalogue 密度，比随机位点 null 严格。
+- (a) 显示 **UPV 与 ambiguous/somatic 的命中率差别很小**（DCIS1 27.2% vs 26.2% vs
+  24.5%）→ Stage-1 gate 对 germline 几乎没有富集作用。
+- (b) DCIS 命中 77–80% 是 AF<1e-4——**这一点既是亮点也是警告**：罕见正是 1kG 漏掉的
+  那类，但一个人不可能携带这么多超罕见变异 → 引出图 3 的校正。
+- **gnomAD 标签是 one-sided**：不在 gnomAD ≠ artifact。所有比率都是下界。
+
+---
+
+### 图 3 · 期望携带数校正：原始 gnomAD 估计高估 3–10 倍
+
+![fig3](figures/upv_v1_fig3_carriage_correction.png)
+
+**Caption (EN).** **Correcting gnomAD corroboration for expected carriage brings the
+germline estimate into agreement with matched-normal WES.** (a) Observed exact gnomAD
+hits against the number one individual is expected to carry, Σ(1−(1−f)²) over the
+matched alleles' frequencies f, per sample (marker) and class (colour). Known germline
+(1KGP panel) defines a calibration of hits/E = 1.64–2.01 (shaded); UPV lies 5.7–20.1×
+above its own frequency expectation. (b) Fraction of UPV estimated to be germline,
+before (open; chance-corrected, f=(exact−null)/(panel−null)) and after (filled)
+rescaling E by the sample's panel hits/E ratio. Diamonds: matched-normal WES
+support for UPV at DNA depth ≥10 (P4 45/2,910; P6 12/618; exact match or ≥3 ALT
+reads at VAF≥0.10); DCIS has no WES.
+
+**讨论要点（中文）.**
+- 这是 advisor 的直觉（"一个人不可能有这么多 out-of-panel germline"）的定量版本。
+- 校正后 UPV germline 占比：**P4 2.0% (~192)、P6 2.9% (~50)、DCIS1 2.7% (~1,444)、
+  DCIS2 3.5% (~1,284)**。四样本从分散的 5.7–19.5% **收敛到 2–4%**。
+- **两个独立方法对上了**：P4/P6 校正后 2.0%/2.9% vs WES 1.55%/1.94%；校正前 5.7%/6.3%
+  对不上。这是本组结果中最强的交叉验证。
+- 局限：校正假设"被检出"这一选择效应对 UPV 与 panel 相同（用 panel ratio 标定）；
+  若 UPV 的检出选择更弱，校正值偏低。
+
+---
+
+### 图 4 · Substitution spectrum：cSCC UPV 是随机错误，DCIS UPV 是 RNA editing
+
+![fig4](figures/upv_v1_fig4_substitution_spectrum.png)
+
+**Caption (EN).** **A DNA-free composition meter separates germline from error and from
+RNA editing.** (a) (C>T|G>A)/transversions per class. True germline (1KGP panel) sits at
+1.21–1.24 in every section (dashed, mean 1.23); uniform random substitution gives 0.25
+(dotted). The ratio excludes A>G/T>C from numerator and denominator and is therefore
+immune to RNA editing, which inflates Ti/Tv. (b, c) Pyrimidine-normalised six-channel
+spectra of panel germline and UPV in P4 (b) and DCIS1 (c).
+
+**讨论要点（中文）.**
+- **cSCC**：UPV/ambiguous/somatic 全部贴在 0.25 随机线（0.23–0.29），(b) 中六通道近乎
+  平坦 → **随机错误**。uncalled 更低（0.11–0.13）。
+- **DCIS**：UPV Ti/Tv 2.16 看似像 germline，但 (c) 中 **T>C（=A>G）49%**，C>T 反而只有
+  19%，ratio 0.58–0.72 → **RNA editing 主导**（29.6% 命中 editing catalogue）。
+- 这也解释了为何 **Ti/Tv 不能单独用**，必须用 editing-免疫的 ratio。
+- 局限：把 ratio 换算成 germline 比例（两组分混合）在 DCIS 上**有偏**——editing 是
+  第三组分；DCIS 应以图 3 为准，此图只作定性诊断。
+
+---
+
+### 图 5 · 250 kb bin 聚类：SPARCAL 1kG-defined 与 GATK 打平，加入 UPV 后低于 GATK
+
+![fig5](figures/upv_v1_fig5_clustering_250kb.png)
+
+**Caption (EN).** **SPARCAL's panel-resolved germline representation matches GATK;
+UPVs, being spatially uniform, dilute it.** (a) Adjusted Rand index against
+annotated cortical layers for 12 DLPFC sections at 250 kb bins (points: sections;
+number: mean). Filled red: SPARCAL 1kG-defined; open red: SPARCAL 1kG+UPV. Gene
+expression is an upper reference. (b) Paired per-section ΔARI against GATK
+(bar: mean). Two-sided Wilcoxon signed-rank, n=12.
+
+**讨论要点（中文）.**
+- **1kG-defined vs GATK：P=0.677（打平）**，7/12 sections 更好；vs Strelka2 P=0.0010。
+- **1kG+UPV vs GATK：P=0.042（显著更差）**，仅 4/12 更好；ARI 从 0.363 降到 0.312。
+- 解读：UPV 由空间均匀性定义，本身没有空间结构，只能稀释表示。**聚类的 claim 必须建立在
+  1kG-defined 上**；"UPV 不增益聚类"与其定义一致，可作为自洽性论据。
+- 需确认：ARI 数值来自既有 benchmark（`data/dlpfc/clustering_benchmark/ari_matrix_mean.csv`，
+  每 section 为多次运行均值）；本图未重跑聚类。
+
+---
+
+### 图 6 · UPV v1 分层产出
+
+![fig6](figures/upv_v1_fig6_tiers.png)
+
+**Caption (EN).** **UPV v1 stratifies calls without removing any.** Composition of each
+section's UPV set by v1 tier, assigned in fixed order: editing (exact hit in the
+SComatic RNA-editing catalogue), then confident (ADP≥50), then low_depth. Numbers:
+calls per tier.
+
+**讨论要点（中文）.**
+- **confident 层只占 6–16%**（DCIS1 3,242 / DCIS2 3,002 / P4 1,472 / P6 256）——
+  这是唯一报备、比对、校准的层；纯度换召回。
+- editing 比例 **DCIS 28–30% vs cSCC 5.5–5.8%**，差一个数量级，与图 4 的独立诊断一致。
+- 注意：DCIS 的 confident 层绝对数（~3,000）已与图 3 校正后的 germline 目标（~1,300–1,450）
+  同阶，是合适的验证区；cSCC 的 confident 层（256–1,472）远大于其目标（50–192），
+  说明 cSCC confident 层内仍以非 germline 为主。
 
 ---
 
