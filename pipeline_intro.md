@@ -296,8 +296,11 @@ samtools/bcftools in multi-sample mode, restricted to in-tissue spots, producing
 an initial per-spot SNV profile. The base- and mapping-quality thresholds
 (e.g. `baseQ0mapQ0`) propagate through all downstream steps.
 
-**Genotype correction and classification.** Genotypes are phased and imputed
-against the 1000 Genomes panel with Beagle. Variants present in 1KGP supply
+**Genotype-posterior refinement and classification.** At candidates represented
+by an exact allele in the 1000 Genomes panel, Beagle refines genotype posteriors
+from pooled genotype likelihoods. The production call uses `gl=` and
+`impute=false`, so it returns unphased GT plus GP at target markers rather than
+phased haplotypes or newly imputed reference-only markers. Variants present in 1KGP supply
 labeled training examples (consistent genotypes, corrected genotypes, and
 non-variant sequencing-error sites); variants outside 1KGP are scored by a
 per-site sequencing-error model and classified by **SparcalNet**, a neural
@@ -305,9 +308,9 @@ network that assigns each candidate to one of three states (non-variant,
 heterozygous, homozygous). Predicted non-variants are discarded; retained
 variants form the kept SNV pool.
 
-**Clonal and copy-number context.** In parallel, phased genotypes are processed
-with CalicoST to estimate per-spot tumor purity, assign spots to clones, and
-infer allele-specific copy-number (including LOH) segments per clone.
+**Clonal and copy-number context.** In parallel, CalicoST results from the same
+section provide per-spot tumor purity, spot-to-clone assignments, and
+allele-specific copy-number (including LOH) segments per clone.
 
 **Spatial rule-out filter.** De-novo (non-1KGP) variants are partitioned by a
 two-stage cascade (1KGP-known variants bypass the cascade as germline):
