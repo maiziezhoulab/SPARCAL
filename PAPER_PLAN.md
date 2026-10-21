@@ -17,6 +17,96 @@ attack; it lists exactly which attacks are live.
 
 Live job tracker: [On_going.md](On_going.md). Manuscript repo: `/data/maiziezhou_lab/leiy4/SPARCAL_pnas_2026`.
 
+### Beagle architecture freeze — user direction, 2026-09-16
+
+The current engineering default is fixed at `modelscale=2, niterations=0,
+maxlr=5000, seed=20260915`, with a single posterior run and the `P(nonref)>=0.90`
+four-route architecture. Production profile and executable:
+`data/releases/beagle_v2_3_default_20260916_v1/`. See
+[the dated decision](doc/BEAGLE_FINAL_DECISION_2026-09-16.md).
+
+The user prioritized immediate architecture finalization and deferred additional
+proof experiments. The registered three-seed/ensemble/final-DLPFC protocol below
+is retained as deferred scientific validation; it is not a blocker to this
+explicit engineering freeze and is not recorded as completed. Existing legacy
+pipeline defaults have not been replaced by this standalone bundle.
+
+### Beagle-module freeze gate (registered 2026-09-12; compatibility rehearsal passed, final DLPFC gate pending)
+
+The production design is an auditable four-route evidence module with two deliberately separate
+downstream channels. The inference channel uses only \`beagle_nonref_highconf\`, defined by
+\`P(nonref)=GP(0/1)+GP(1/1)>=0.90\`, as a hard germline anchor; \`beagle_ref_highconf\`,
+\`beagle_uncertain\`, and \`panel_absent\` remain explicit non-anchor outputs. Called-genotype
+GP>=0.90 is retained only as a generic ablation. WES is never a production input. Because the P4/P6
+matched-DNA silver standard (normal and somatic WES) informed method selection, it is internal
+development evidence, not an untouched held-out test.
+
+The production output must be described as **reference-panel-informed genotype-posterior
+refinement**, not as a phased-haplotype callset. Beagle 4.1 explicitly emits unphased estimated
+genotypes for `gl=`/`gtgl=` input and requires a second run with the first output supplied as
+`gt=` to emit phased genotypes. Direct inspection of completed v2.3 P6 chr22 outputs agrees:
+all 709 heterozygotes at `modelscale=2,niterations=0` and all 687 at
+`modelscale=2,niterations=5` use `/`, with no pipe-delimited heterozygous GT. The latter log does
+execute five internal phasing iterations, but the saved interface remains unphased GT plus
+`GP=(P00,P01,P11)`. The router deliberately discards allele order and makes its primary decision
+from `P(nonref)`; neither phase orientation nor a phase-set field enters production routing.
+An earlier non-destructive P4 chr10 sidecar shows that a second `gt=` pass is mechanically
+possible: it preserved all 2,131 exact allele records and all unordered first-pass GTs while
+emitting `|` for 641/641 heterozygotes. That is not phase validation. The phased records contain
+only GT (the first-pass GP/DS values are not emitted), no PS blocks or independent phase truth are
+available, and two direct-`gt` runs at niterations 0 versus 5 had only 0.514 best-global-flip
+orientation concordance and 0.646 adjacent phase-relation concordance. Those historical runs did
+not pin seeds, so the numbers are exploratory, but they rule out promoting phase merely because
+100% of heterozygotes have a pipe separator. The phase sidecar remains outside the production
+caller unless a phase-specific downstream endpoint and fixed-seed/truth validation are opened.
+
+The separate feature-compatibility channel, \`all_panel_present\`, is the union of the first three
+routes. It exists only to reproduce legacy consumers whose DLPFC matrices are keyed by
+\`chrom_pos\`: a position is retained when any exact allele at that position is panel-present. It
+is not a germline callset and must not be used to claim caller accuracy. Across all 12 sections,
+this projection reconstructs the canonical legacy unbinned \`defined1000G\` matrices exactly
+(same rows, columns and values). The earlier hard-anchor-only conservative projection retained
+less feature support and produced a material drop in section 151670; it remains a negative
+sensitivity result, not the production compatibility representation.
+
+The checksum-pinned strict 12-section DLPFC Beagle-output matrix -> STAGATE -> fixed-EEE mclust
+**compatibility rehearsal** is complete and wrote \`ACCEPTED\`. Baseline and candidate each completed 120/120 runs
+(10 paired seeds per section; 240/240 total fixed-EEE successes, no fallback). Candidate-minus-
+baseline mean delta ARI was +0.00510, mean delta NMI was -0.00299, the minimum donor mean delta ARI
+was -0.00399, and the worst section mean delta ARI was -0.04526. All frozen gates passed: mean
+delta ARI >= 0, minimum donor mean > -0.01, no section mean < -0.05, mean delta NMI >= -0.01,
+>=9 paired successes per section, candidate success >= baseline, and no candidate-only failure or
+fallback. The section-resampling interval [-0.00820, +0.01858] is descriptive, not a formal
+non-inferiority confidence interval.
+
+Because the two input matrices are exactly equal while GPU STAGATE is not bitwise deterministic,
+the small score differences are stochastic variation and must not be presented as an improvement.
+The result is a backward-compatibility/no-harm test of the representation, not evidence that any
+individual variant is more accurate. Frozen run:
+\`data/experiments/beagle_dlpfc_panel_present_strict_regression_20260913_v1_fixed_eee/\`;
+assessment:
+\`data/experiments/beagle_dlpfc_panel_present_strict_regression_assessment_20260913_v1_fixed_eee/\`.
+
+This rehearsal does not discharge the final replacement gate. After P4/P6 parameter replication
+and posterior-ensemble selection freeze one exact v2.3 module, that module must be materialized on
+all 12 DLPFC sections and undergo one new paired 10-seed STAGATE/fixed-EEE run, even if its primary
+\`all_panel_present\` matrices are exactly equal to the legacy matrices.
+
+Before seed replication, an independent checksummed audit must recompute all screen metrics and
+gate decisions from the canonical v2.3 evidence, confirm one exact raw allele universe per sample,
+and agree exactly with the three screen selectors. The replication planner and final assessor both
+verify this audit; selector tables alone are not sufficient evidence for admission.
+
+Keep three Monopogen contracts separate in all comparisons: its paper rule requires the raw-PL
+argmin to agree with the emitted first-pass Beagle GT and to be non-reference; released downstream
+code uses exact allele-record membership in the final phased VCF regardless of final GT, together
+with raw read support; and \`P(nonref)>=0.90\` is our derived cross-contract diagnostic, not a native
+Monopogen rule. Monopogen invokes Beagle with
+\`niterations=0\`, which still runs Beagle 4.1's ten mandatory burn-in iterations and means zero
+additional phasing iterations. The second Beagle pass is therefore a phasing step, not independent
+variant-membership evidence. This description is specific to Monopogen's two-pass workflow and
+must not be used to imply that SPARCAL v2.3 emits phased target GTs.
+
 ---
 
 ## 1. Thesis (advisor, 2026-07-28)
@@ -42,10 +132,10 @@ field. **This paper does not contest coverage; it validates the variant sets.**
 | **1** | SPARCAL pipeline (dual pathway, CNV/clone-guided cascade) | text written; diagram file still a placeholder |
 | **2** | **Germline — unbinned.** SPARCAL vs Strelka2 vs GATK vs GE: ARI + spatial domains + **UMAP** | data partly there; **needs the `defined` 12-section promotion** (§4.1) |
 | **3** | **Germline — binned (250 kb), separate section.** Ties GATK; `defsom` vs `defined`; bin-size sweep | data partly there; **needs `defsom_bin250kb` 12-section promotion** (§4.2) |
-| **4** | **Somatic — why it is hard.** WES callability, exome rate, singleton support, Mutect2 germline leakage | fully grounded, no new compute needed (§4.3) |
+| **4** | **Somatic — why it is hard.** Published-WES observability, pre-Beagle candidate loss, exome rate, singleton support | WES BAM audit + Viewer complete; production candidate rerun needed before freeze (§4.3) |
 | **5** | **Somatic — COSMIC cascade** germline > UPV > somatic > unresolved | grounded on `current` sets; **fragile, see §5** |
-| **6** | **Somatic — tumor-region detection ARI** (SNV methods only, no coverage baseline) | SPARCAL-sets version exists; **cross-tool version is new work** (§4.5) |
-| **7** | **Somatic — specific hits + biology** (per-sample CGC candidates, WES-confirmed variants, spatial maps) | annotation **DONE** 2026-07-28; old cSCC signature **falsified**, WES panel still to build (§4.6b) |
+| **6** | **Somatic — variant-only tumor-region detection ARI** | rebuilt with SpaceTracer and SPARCAL germline control (§4.5) |
+| **7** | **Somatic — specific hits + biology** (per-sample CGC candidates, WES-confirmed variants, spatial maps) | annotation **DONE**; old cSCC signature **falsified**; 28/9 exact-ALT WES Viewer profiles ready (§4.6b) |
 | **8** | **SPARCALViewer as standalone software** — tumor-region detection, region-scoped SNV export, profile scoring; **the tool that computes the tumor-section ARI** | code verified; needs a release + Fig. 4 panels rebuilt on current sets (§3 Story D) |
 
 ---
@@ -185,9 +275,19 @@ field. **This paper does not contest coverage; it validates the variant sets.**
 
 **HAVE — all grounded, no new compute required:**
 
-- **WES callability:** RNA covers only **1.2 %** of P4 WES-somatic positions (40/3,451) and
-  **1.0 %** of P6 (27/2,604) — expression restriction + dropout, not a SPARCAL failure.
-- **Direct overlap:** SPARCAL-somatic ∩ WES-Mutect2-exome = **8 (P4) / 7 (P6)** positions.
+- **Primary matched-DNA silver standard:** published filtered STmut Table S1 contains **683 P4 / 386 P6**
+  autosomal SNVs. The authors report Rep1 ALT>0 at **18/8**; direct interrogation of our
+  current UMI-deduplicated Rep1 BAMs finds at least one exact-ALT family at **28/9**
+  (12/5 have at least two families). Final SPARCAL somatic recovers **4/3**.
+- **Pre-Beagle loss is now diagnosed:** only **11/28 P4** and **3/9 P6** directly
+  observable alleles enter the current merged pooled VCF. **14/2** are supported only by
+  duplicate-flag reads excluded by default `samtools mpileup`; **3/4** more appear in
+  regional mpileup but are deleted by the pooled 0/0 genotype gate. Therefore the current
+  merged VCF is a candidate-entry universe, not a fundamental raw-mpileup baseline.
+- **Legacy 40/27 explained:** these are position-only overlaps against local **unfiltered**
+  Mutect2 WES candidates (3,450/2,585 alleles), not published truth. Exact-ALT overlap is
+  **34/22**; only **11/3** belong to published Table S1 and the remaining **23/19** are
+  unfiltered DNA candidates.
 - **Singleton support** (`data/artifact_evidence_benchmark/v2_cross_section_2026-07-16/`):
   61–82 % of somatic candidates are a **single alt UMI in a single spot**; ≥2 alt reads in only
   28.6 % (P4) / 18.4 % (P6) / 65.0 % (DCIS1); ≥2 spots in 19.2 % / 8.2 % / 22.6 %.
@@ -203,7 +303,7 @@ field. **This paper does not contest coverage; it validates the variant sets.**
    ⚠️ mind the boundary-convention mismatch vs the DLPFC exome builder
    ([[project_exome_filtering]]).
 
-### Story C2 — Mutect2 germline leakage in the WES "truth"
+### Story C2 — germline content in the legacy unfiltered Mutect2 candidates
 
 **HAVE:**
 
@@ -221,10 +321,12 @@ field. **This paper does not contest coverage; it validates the variant sets.**
   matches) ⇒ **mechanism (a) common-SNP leakage is supported**; (b) LOH and (c) paralog/segdup are
   **not testable** — no allele-specific LOH segmentation and no segdup annotation exist for these
   samples. Say so rather than speculating.
-- Allele-aware landing of the RNA-covered WES-somatic sites in SPARCAL's classes:
-  P4 {defined 6, UPV 1, somatic 7, unresolved 11}; P6 {2, 1, 7, 7}.
-- **The point for SPARCAL:** WES-somatic calls that land in our `defined` class are *by construction*
-  in 1000G — i.e. SPARCAL correctly germline-flags the leakage in the bulk-DNA truth.
+- Allele-aware landing of the 34/22 legacy exact matches:
+  P4 {defined 6, UPV 1, somatic 7, unresolved 11, not classified 9};
+  P6 {defined 2, UPV 1, somatic 7, unresolved 7, not classified 5}.
+- These local Mutect2 VCFs are explicitly unfiltered and are not the primary truth.
+  Their 1000G overlap demonstrates why the local candidate set cannot be called
+  WES-verified somatic; it does not prove “leakage” in the published filtered Table S1.
 - Figure + tables: `COSMIC/wes_somatic_vs_sparcal_2026-07-13.{png,pdf}`,
   `data/somatic_validation_2026-07-13/data/{wes_1kg_contamination,wes_sparcal_breakdown}.csv`.
 
@@ -274,49 +376,33 @@ locked pipeline version.
     candidates"** in the manuscript (it is what the class actually is: below the rank cut, not
     proven artifactual).
 
-### Story C4 — tumor-region detection ARI (no coverage baseline)
+### Story C4 — tumor-region detection ARI (variant-only comparison)
 
-**HAVE** (`SPARCAL_Benchmarking/analysis/region_method_benchmark/`, DCIS2 pathology GT =
-10 foci / 249 spots, 0.6×0.6 clip = 789 spots):
+**✅ VARIANT-ONLY REBUILD DONE 2026-09-06** —
+`SPARCAL_Benchmarking/analysis/region_method_benchmark/
+variant_only_spacetracer_2026-09-06/`. Every ranked input is a spot×variant matrix. The
+comparison contains SPARCAL somatic, SpatialSNV, Monopogen somatic, and SpaceTracer;
+SPARCAL's panel-resolved germline matrix is the negative-control variant representation.
+Total UMI is used only as the covariate for burden normalization and is **not** a method,
+baseline, or clustering score. Raw burden is retained only as a sensitivity table.
 
-| SNV set | best raw ARI | F1 | precision | recall |
-|---|---|---|---|---|
-| merged | 0.629 | 0.787 | 0.812 | 0.763 |
-| UPV+somatic | 0.610 | 0.774 | 0.799 | 0.751 |
-| somatic | 0.606 | 0.776 | 0.788 | 0.763 |
-
-Three detectors each (burden watershed baseline / marker-restricted / neighbour-pooled profile).
-P6 pathology mask also available (`data/spatialsnv_reanalysis_2026-07-17/p6_gt/`, 1,504 tumor /
-2,215 normal, whole section — no clip needed).
-
-**✅ CROSS-TOOL REBUILD DONE 2026-07-29** — `SPARCAL_Benchmarking/analysis/region_method_benchmark/
-current_2026-07-28/` (`benchmark_best_ari_all.csv` + per-sample CSVs). Rebuilt on the `current` sets
-per D1, extended to SpatialSNV + Monopogen and to P6. Integrity checks passed: UPV derived as
-`germline`−`1000G` matched the VCF `RACE=denovo` count exactly on **both** samples (DCIS2 36,323;
-P6 1,744), and Monopogen's matrix orientation was verified (3,719/3,719 in-tissue overlap).
-
-| sample | best → worst (raw burden, best over detector+params) |
+| sample | best normalized ARI, high → low |
 |---|---|
-| **DCIS2** | SpatialSNV **0.671** > coverage 0.657 > SPARCAL merged 0.612 / somatic 0.609 / upv+som 0.603 |
-| **P6** | SPARCAL somatic **0.162** > coverage 0.157 > Monopogen 0.149 > SpatialSNV 0.117 > SPARCAL upv+som 0.091 / merged 0.087 |
+| **DCIS1** | SpaceTracer **0.330** > Monopogen 0.281 > SPARCAL 0.268 > SpatialSNV 0.242 > SPARCAL germline control 0.238 |
+| **DCIS2** | Monopogen **0.438** > SpatialSNV 0.431 > SPARCAL 0.294 > SPARCAL germline control 0.276 > SpaceTracer 0.120 |
 
-**Reading (this is the honest one):** ⚠️ **the ranking flips between samples and nothing separates
-from coverage.** SPARCAL is 3rd on DCIS2 and 1st on P6, but the P6 margin over coverage is +0.005 —
-noise. Two further facts must be stated in the paper: (a) **DCIS2 is from SpatialSNV's own published
-dataset**, so the one comparison they win is not independent; (b) **P6 absolute ARIs are 0.09–0.16
-for every method** — the whole panel is near-useless there, versus 0.60–0.67 on DCIS2. The
-determining variable is annotation geometry (compact foci vs diffuse leading edge), not caller.
-⇒ **Do NOT present this as a caller ranking.** Drafted Results now frames it as a bound on what
-burden-based region detection can do. Version note: the current-set rebuild reproduced the old
-pre-dedup DCIS2 numbers within 0.007, so D1 did not move this result.
+SpaceTracer final callsets contain 16 variants in DCIS1 and 13 in DCIS2. Its P6 run did
+not reach a final callset, so no intermediate output is substituted in the complete
+four-tool figure. P6 remains in the audit tables for the four available variant matrices;
+its best-ARI settings are discordant with F1 under class imbalance and are not used for a
+caller-ordering claim.
 
-**MISSING:**
-
-12. ~~Cross-tool comparison~~ — **DONE** (above).
-13. ~~P6 extension~~ — **DONE** (above).
-14. `coverage_only` = 0.657 is in the same CSV and **exceeds every SNV method**. Omitting it from
-    the figure is the advisor's call and is defensible for *this* paper's scope — but do not delete
-    the number, and expect the question at review (see §6 guardrails).
+**Writing decision (user, 2026-09-06):** compare variants with variants. Do not report a
+UMI-only clustering score, do not call UMI a caller baseline, and do not use region
+recovery as validation of somatic identity. The figure uses the germline control and the
+normalized burden results above. The order changes between DCIS sections, both sections
+accompany the SpatialSNV study, and callset sizes differ greatly, so this is a downstream
+spatial-utility comparison rather than a general caller ranking or accuracy benchmark.
 
 ### Story C5 — specific somatic hits and their biology
 
@@ -325,8 +411,9 @@ pre-dedup DCIS2 numbers within 0.007, so D1 did not move this result.
 - COSMIC ∩ **current** somatic-set gene lists: `cosmic_amb/{p4_tumor,p6_tumor,dcis1,dcis2}_somgenes.txt`
   (196 / 372 / 157 / 183 genes) plus `cosmic_amb/cgc_genes.txt` (Cancer Gene Census) and full
   `bcftools isec` output dirs per class per sample.
-- **7 (P4) / 7 (P6) WES-confirmed, RNA-covered somatic positions inside the somatic set** — the
-  gold-standard shortlist, DNA-validated.
+- **4 (P4) / 3 (P6) final SPARCAL somatic alleles in published filtered Table S1** —
+  the primary matched-DNA-supported shortlist. Viewer profiles also expose all **28/9**
+  current-BAM-observable Table S1 alleles regardless of final class.
 - SPARCALViewer can project per-spot COSMIC-hit counts onto tissue (P4: 407 spots with ≥1 hit,
   max 7 at one spot).
 
@@ -552,28 +639,28 @@ ARI alone.
 Stratify the P4 976 / P6 811 leaked WES-somatic sites by (a) 1KGP allele frequency and (b) CalicoST
 LOH-segment membership. One short script; answers the advisor's "what other causes?".
 
-### 4.5 ⭐ Cross-tool region detection (DCIS2 + P6) — **DONE 2026-07-28**
-✅ `SPARCAL_Benchmarking/analysis/region_method_benchmark/current_2026-07-28/` — all four arms
-(**SPARCAL, SpatialSNV, Monopogen, coverage-only**) on **both** DCIS2 and P6, via
-`benchmark_current.py`. This is the source for SI Fig. S2. Outcome is **not** a caller ranking and
-must never be written as one: the ordering **reverses** between the two samples, SpatialSNV beats us
-on DCIS2 (0.671 vs 0.612), no method separates meaningfully from the coverage baseline, and DCIS2 is
-drawn from the SpatialSNV publication's own dataset, so that comparison is not independent. Coverage
-baseline is omitted from the figure per L3-as-amended but plotted dashed in the SI version.
+### 4.5 ⭐ Cross-tool region detection — **REBUILT 2026-09-06**
+✅ `SPARCAL_Benchmarking/analysis/region_method_benchmark/
+variant_only_spacetracer_2026-09-06/` — SPARCAL, SpatialSNV, Monopogen, and SpaceTracer
+somatic outputs on DCIS1/DCIS2, with SPARCAL germline as the negative-control variant
+matrix. The primary result uses normalized burden. UMI is a normalization covariate only,
+not a method. P6 remains in the audit table without SpaceTracer because no final P6
+SpaceTracer callset exists. The changing order across sections and the non-independent
+DCIS source preclude a caller-ranking claim.
 
-### 4.5b Original scope note
-Run `SPARCAL_Benchmarking/analysis/region_method_benchmark/benchmark.py`'s three detectors on the
-SpatialSNV and Monopogen matrices as additional "SNV sets", plus extend the harness to the P6
-pathology mask. Report ARI/F1/precision/recall **per tool**, coverage baseline omitted from the
-figure per the advisor (but kept in the CSV). Matrices: `SpatialSNV/results/{dcis2,p6}/matrix/…`,
-`SPARCAL_Benchmarking/monopogen/P6_rep1/…`.
+### 4.5b Original scope note — superseded
+The July 2026 raw-burden/UMI-control design is retained only in its dated analysis
+directory. It is not the source for the paper figure or current prose.
 
 ### 4.6 Somatic-hit biology package — **(a) and (c) DONE 2026-07-28**
 (a) ✅ CGC intersection + per-class gene annotation — `scripts/postanalyze/cosmic_somatic_gene_annotation.py`
 → `data/somatic_hits_2026-07-28/`. (c) ✅ shared-cSCC signature recomputed on the current sets — the
 draft's KRT6B/SPINK5 claim is **falsified**; what recurs is HLA (§3 Story C5).
-**(b) still to do — now the section's headline:** annotate the 7 (P4) + 7 (P6) WES-confirmed somatic
-variants (gene / protein change / COSMIC ID / per-spot spatial map).
+**(b) ✅ DONE 2026-09-08:** published-WES observability audit and reusable Viewer profiles:
+`SPARCAL_Benchmarking/analysis/somatic_callset_validation_2026-09-07/`
+(`wes_observability_audit_2026-09-08/`, `wes_spatial_analysis/`) and
+`SPARCAL_Benchmarking/viewer/dist/studies/P{4,6}_rep1_WES_verified_detectable*`.
+Profiles contain all 28/9 current-BAM exact-ALT Table S1 alleles; 4/3 are final somatic.
 **(d) still to do:** regenerate per-spot COSMIC-hit maps for all four samples on the current sets,
 via SPARCALViewer (also fixes the stale "407 spots / max 7 hits" Fig. 4 number).
 
@@ -607,8 +694,10 @@ inconsistency that sank the previous plan. Do this **first**, then build §4.5 o
   win-on-all-metrics claim.
 - **L2.** Germline gets **two separate sections**: unbinned (variant sets make sense) and binned
   (spatial representation makes sense).
-- **L3.** Somatic region detection is reported **without** the coverage/UMI baseline in the figure.
-- **L4.** The UMI-dominance / coverage-confound benchmark is **deferred to a second paper**.
+- **L3.** Somatic region detection compares variant matrices only; SPARCAL germline is
+  the negative control and UMI is used only for burden normalization.
+- **L4.** A UMI-only clustering score is not evidence about caller performance or
+  somatic identity and is not reported as a competing method.
 - **L5.** Continue `PaperDraft.tex`; do not splice in `RESULTS_PIVOT_DRAFT.tex`.
 
 **Locked (user, 2026-07-28):**
@@ -628,8 +717,9 @@ inconsistency that sank the previous plan. Do this **first**, then build §4.5 o
   `sparcal` (1kG+UPV) alongside as the full-pipeline default, so the paper shows both the best
   representation and what the pipeline actually emits. The 1KGP-restricted-vs-1KGP-filtered caveat
   (§3 Story A, risk 4) must be stated in the same paragraph.
-- **D4 — region detection is cross-tool:** SPARCAL vs **SpatialSNV** vs **Monopogen**, on **DCIS2 and
-  P6** (both pathology GTs), coverage baseline omitted from the figure but retained in the CSV (§4.5).
+- **D4 — region detection is cross-tool and variant-only:** SPARCAL vs **SpatialSNV** vs
+  **Monopogen** vs **SpaceTracer** on DCIS1/DCIS2, with SPARCAL germline as the
+  negative-control variant matrix. P6 stays in the audit table without SpaceTracer (§4.5).
 
 **Still open:**
 
@@ -638,10 +728,11 @@ inconsistency that sank the previous plan. Do this **first**, then build §4.5 o
   to find a defensible alternative framing if it does not hold up. Original statement of the
   decision follows.
   **What Story C5 (Fig. 7) actually claims, now that both of its legs are weak.** The COSMIC
-  signature is falsified (HLA-driven), and the WES-confirmed set is 14 variants with 0 cancer-gene
-  hits and **13** unannotated (§3 Story C5 item 16 — this line previously said 11, contradicting
-  the 2026-07-29 correction two hundred lines above it; 13 is the value verified against
-  `wes_confirmed_somatic_annotated.csv`, where `GJB2` is the only annotated locus).
+  signature is falsified (HLA-driven), and the old 14-variant panel came from the
+  local unfiltered Mutect2 candidate set rather than the published primary truth.
+  The corrected primary result has **7 final SPARCAL calls in Table S1 (4 P4 + 3 P6)**,
+  while the all-outcome Viewer contains **28/9** current-BAM-observable Table S1
+  alleles. Any old n=14 panel must be regenerated before use.
   Options: **(a)** merge Fig. 7 into the platform-limit
   section as "what individual retained calls look like at this depth" — honest, removes a weak
   standalone figure, and the material still appears; **(b)** keep Fig. 7 but reframe it entirely
@@ -701,14 +792,10 @@ pointing at a dead file)?
 Locked decisions above are left as written; this block records what has since
 changed and why. Where the two conflict, **this block wins**.
 
-- **L3 and the baseline clause of D4 are SUPERSEDED.** Both said to omit the
-  coverage/UMI baseline from the region-detection figure. That figure is no longer
-  in the main text — it moved to SI Fig. S2 — and in SI the baseline is plotted
-  (dashed). Rationale: the number sits in the released CSV
-  (`benchmark_norm_bestARI.csv`), so hiding it is an editorial choice a reviewer
-  can catch, and coverage-only *beats* every SNV set on DCIS2 (0.657 vs 0.629).
-  Showing it pre-empts the question instead of inviting it. The rest of D4
-  (cross-tool, DCIS2 + P6) stands.
+- **L3/D4 are superseded again by the 2026-09-06 user decision.** The current
+  comparison uses like-for-like variant matrices, adds SpaceTracer, uses SPARCAL
+  germline as the negative control, and removes UMI-only clustering scores from the
+  manuscript and SI. UMI remains only the covariate for normalized burden.
 - **Figure numbering changed.** Bin-width sweep (former main Fig. 3c) → **SI
   Fig. S1**; region detection (former main Fig. 6) → **SI Fig. S2**; downstream
   main figures renumbered **7→6, 8→7**. Figure *filenames* were deliberately not
@@ -763,7 +850,8 @@ changed and why. Where the two conflict, **this block wins**.
   never sees BAF.
 - **D7 RESOLVED 2026-08-07 → option (b).** The Fig. 7 subsection now leads with the
   MHC/HLA recurrence caution and folds the Cancer Gene Census candidate list and the
-  14 WES-confirmed variants underneath it (option (a)'s material is retained, not
+  corrected published-WES result underneath it (seven final matched-DNA-supported
+  calls plus the 28/9 all-outcome observability audit; option (a)'s material is retained, not
   deleted). New subsection title: *"Apparent cross-patient recurrence in RNA-derived
   somatic calls is dominated by the MHC."* Rationale: the candidate list is almost all
   single observations and recurs in neither cSCC patient, so leading with it invites the
@@ -771,11 +859,10 @@ changed and why. Where the two conflict, **this block wins**.
   contribution the somatic half has, and `fig7_hla_wes_evidence.pdf`'s caption was already
   written around it. Note this is main **Fig. 7**, not Fig. 6 — the earlier note here said
   Fig. 6, which predates the 2026-08-06 insertion of the SpatialSNV head-to-head at Fig. 5.
-- **BUG FIXED with it:** the CGC candidate sentence cited **Fig. 7c**, but panel (c) is the
-  14 WES-confirmed variants (`fig7_hla_wes_evidence.py:12`; `ax_c` title *"WES-confirmed
-  somatic variants (n=14; 0 Cancer Gene Census)"*). There is no panel for the CGC
-  candidates. The citation moved to the WES paragraph, and the recurrence paragraph now
-  cites Fig. 7a,b.
+- **STALE PANEL TO REBUILD:** Fig. 7c and `fig7_hla_wes_evidence.py` still label 14
+  local-unfiltered-Mutect2 overlaps as “WES-confirmed.” Replace that panel with the
+  published Table S1 result (seven final calls and/or the 28/9 observable Viewer sets)
+  before manuscript freeze. There is no panel for the CGC candidates.
 - **D8 RESOLVED 2026-08-07 → NO CONSOLIDATION.** D8 (consider merging the somatic figures
   down to two) predates the advisor's 2026-08-04 review and is superseded by it: the review
   explicitly asks to keep the COSMIC cascade and the somatic-hits figure in main (comment 4),
@@ -808,8 +895,9 @@ changed and why. Where the two conflict, **this block wins**.
    RNA-artifact catalogue; we have no direct artifact evidence for those loci.
 6. **Do not claim genotype correction.** The audit against matched-normal WES gave 51–56 % agreement
    and the pipeline does not rewrite `GT` — it is a filtering/confidence layer.
-7. **Region detection omits the coverage baseline by editorial scope, not because it is absent.**
-   Have the answer ready; keep `coverage_only` = 0.657 in the supplementary CSV.
+7. **Region detection is not somatic validation.** Every ranked input must be a variant
+   matrix; use SPARCAL germline as the negative control and do not compare callers with
+   an UMI-only clustering score.
 8. **DLPFC is a positive control, not a demonstration of the somatic model** — normal cortex has no
    clonal structure to encode.
 
@@ -836,8 +924,9 @@ benchmark to the separate second paper — this is the sentence that keeps this 
   numbers use a `\PENDING{}` macro that renders visibly, so an unresolved value cannot ship silently.
 - **Do not splice into `PaperDraft.tex` until Discussion + Conclusions are rewritten too** — the
   existing abstract makes three claims this draft does not support: "consistently more concordant
-  than either caller" (binned is a tie, p=0.68), "strong concordance with matched WES" (false — ~1%
-  callability), and COSMIC "supports biological relevance" (catalogue membership is comparative,
+  than either caller" (binned is a tie, p=0.68), "strong concordance with matched WES"
+  (overstated — current exact-ALT observability is 28/683 P4 and 9/386 P6, with 4/3 final
+  SPARCAL recovery), and COSMIC "supports biological relevance" (catalogue membership is comparative,
   not driver validation). The draft
   abstract in the comment block fixes all three.
 - The existing **Introduction needs no rewrite** — it already argues modality + CNV-as-calling-evidence,
@@ -846,8 +935,9 @@ benchmark to the separate second paper — this is the sentence that keeps this 
 **Open `\PENDING{}` items and what resolves each:** unbinned 12-section ARI + Wilcoxon (job 12824499);
 the 2×2 settings table incl. `defsom` (job 12824500 → the defsom clustering array); kNN embedding
 purity (`embedding_quality.py`); cross-tool region-detection table
-(`region_method_benchmark/current_2026-07-28/`); WES leakage mechanism split and the WES-confirmed
-somatic variant table (`data/somatic_evidence_2026-07-28/`).
+(`region_method_benchmark/current_2026-07-28/`). The primary published-WES
+observability audit, per-stage destinations, and P4/P6 Viewer profiles are complete;
+only the production candidate-generation rerun remains open.
 
 ## 7. Data & script index
 
@@ -899,9 +989,9 @@ work from.
 The manuscript disclaims almost every result it reports — correctly — and after the disclaimers,
 one positive claim is left standing: that the spatially augmented 250-kb representation matches
 gene expression on 10-NN cortical-layer purity (0.856 vs 0.859). **That claim has never been run
-against a coverage or detection control**, while the region-detection section demonstrates that a
-no-SNV coverage baseline wins when one is supplied. The paper therefore proves it knows the
-control is decisive and does not apply it to its own headline.
+against a capture/detection control.** The tumor-region comparison does not answer that DLPFC
+representation question: it now compares only variant matrices, uses germline variants as its
+negative control, and treats total UMI only as a normalization covariate.
 
 A referee's question becomes: *what am I being asked to accept as new and true?* On the current
 text there is one sentence, and it is uncontrolled.
@@ -925,11 +1015,11 @@ text there is one sentence, and it is uncontrolled.
 | **M1** | Germline classification is tautological ("by construction, because they are in the 1KGP panel") and its complement — what happened to the other 18–36% — is unreported | P1-6 |
 | **M2** | The one validation these data support is missing: germline concordance vs matched-normal WES. Currently one subordinate clause in the Discussion | **P1-1** ⭐ |
 | **M3** | No mutational spectrum. The first artifact check for RNA-derived variants. 2 of 14 WES-corroborated calls are already A>G | P1-2 |
-| **M4** | "Visium covers ~1% of whole-exome somatic positions" conflates 3′ capture geometry, expression, depth, and allelic dropout. Most exonic mutations are absent from the library at any depth | P1-3 |
+| **M4** | A single “WES callability” percentage conflates 3′ capture geometry, expression, depth, allelic dropout, and processing. Report the explicit definitions (published Rep1 ALT 18/8; current BAM exact ALT 28/9; merged-VCF entry 11/3) | P1-3 |
 | **M5** | **Resolved by author decision:** retain COSMIC as a same-basis external benchmark across classes/callers, report xMHC exclusion separately, and avoid variant-level validation or driver claims | P1-4 |
 | **M6** | xMHC correctly diagnosed then not acted on — exclusion should be primary, inclusion the sensitivity check. No HLA-aware realignment; somatic HLA LOH vs mismapping never distinguished | P1-4 |
 | **M7** | CalicoST circularity: purity is inferred from allele-specific expression in the same BAM that supplies the variants, then used to rank those variants. ε = ζ·δ makes the voting scheme's voters correlated | P1-7 |
-| **M8** | Beagle/1KGP imputation on spatial RNA unvalidated (ASE, NMD, reference bias violate its model); donor/patient ancestry never reported | P1-8 |
+| **M8** | Beagle/1KGP genotype-posterior refinement on spatial RNA requires validation under ASE, NMD, and reference bias; donor/patient ancestry is not reported. The production `gl=` pass uses `impute=false` and does not add reference-only markers | P1-8 |
 | **M9** | Monopogen's depth-floor explanation is asserted, not demonstrated. One matched-floor run settles it | P1-5 |
 | **M10** | No independent cohort. Four sections, ≤3 tumors; DCIS2 — where SpatialSNV wins — is SpatialSNV's own dataset | P1-9 ⛔ |
 
@@ -954,15 +1044,12 @@ Recorded so the conflict is explicit rather than discovered later. **These are a
 decisions and are not overridden by this section** — but each now has a referee-side argument
 against it that should be answered.
 
-- **L3 / D4 (coverage baseline omitted from the region figure)** — already superseded in practice;
-  the guided draft plots and discusses it. §6 guardrail 7 is stale. The referee's point is that
-  the paper carries the liability of the coverage finding without the credit for it.
-- **L4 (coverage benchmark deferred to paper #2)** — the referee reads
-  `PAPER_PLAN_DEPRECATED.md` §1 as the stronger half of the study: a coverage-conditioned test
-  *with a working positive control* (TSK 0.807, epithelial 0.946 beat coverage; no SNV burden from
-  four tools does), STMut at 14,565 gold WES loci giving AUC **0.432** — below chance, with tumor
-  spots carrying *lower* burden — cross-method Jaccard 0.049, and subclone structure at η²(UMI)
-  0.71–0.74. Splitting has produced a paper with the caveats and a paper with the evidence.
+- **L3 / D4 (region-comparison control)** — resolved by the 2026-09-06 rebuild: all ranked
+  inputs are variant matrices, SPARCAL germline is the negative control, and UMI is used only
+  as a normalization covariate. No UMI clustering score is reported.
+- **L4 (separate capture-mechanism analysis)** — remains outside the current caller
+  comparison. Historical UMI/capture analyses are not a caller baseline and are not used as
+  somatic-variant verification.
 - **D2 (COSMIC as a same-basis comparison; no additional model scheduled)** — retained by author
   decision; use identical catalogue matching across classes/callers and keep claims comparative.
 - **D6 (report both raw and xMHC-excluded)** — referee wants xMHC-excluded as *primary*.

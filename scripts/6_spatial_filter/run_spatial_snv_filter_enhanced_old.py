@@ -1012,7 +1012,7 @@ class EnhancedSpatialSNVFilter:
             # Get race for this variant
             race = self.snv_race.get(variant, "unknown")
 
-            # ── Defined variants (from Beagle/1kG imputation) are germline by definition ──
+            # ── Defined variants (from the Beagle/1KGP panel intersection) bypass scoring ──
             # They were identified via population-level imputation and must never appear
             # in somatic_defined or ambiguous_defined regardless of spatial score.
             if race == "defined":

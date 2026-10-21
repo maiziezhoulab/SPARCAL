@@ -43,14 +43,24 @@ Status keys: `TODO` · `RUNNING` · `DONE` · `PARTIAL` (assets exist, see note)
 
 ## 0.5 P0-PHASE — the phasing rework (opened 2026-08-23)
 
-**Status: ACTIVE, highest priority. Side-car only — the shipped pipeline is not modified.**
+**Status: MECHANISM RESOLVED; phase-derived downstream work remains side-car only. The shipped
+pipeline is not modified.**
+
+**Correction recorded 2026-09-13.** The absence of phased output is caused by the Beagle 4.1
+`gl=`/`gtgl=` input contract, not by `niterations=0`. Those likelihood modes emit unphased
+estimated GT plus GP; a second `gt=` pass is required for phased GT. The existing P4 chr10
+sidecar demonstrated 100% pipe-delimited heterozygotes under `gt=`, including a two-pass
+`gl→gt` run that preserved exact records and unordered GTs. It did not validate phase accuracy:
+the phased records contain GT only, have no PS blocks or independent truth, and exploratory
+direct-`gt` niter0/niter5 outputs were unstable across phase relations. Current Beagle v2.3
+therefore uses phase-invariant GP/P(nonref) evidence and makes no phased-haplotype claim.
 
 ### The discovery
 
-`run_beagle.py` runs Beagle 4.1 with **`niterations=0`** and **`impute=false`**
-(`BEAGLE_PARAMS` lines 96-99). `niterations=0` disables the Li-Stephens phasing iterations
-entirely, so Beagle is used as a panel-based genotype *refiner*, never as a phaser. The
-signature is visible in every output record: `AR2=0;DR2=0`. Confirmed empirically —
+`run_beagle.py` runs Beagle 4.1 in **`gl=` mode** with `niterations=0` and `impute=false`.
+`niterations=0` still performs ten Beagle 4.0 burn-in iterations; the decisive behavior is that
+`gl=` emits estimated genotypes unphased. Beagle is therefore used as a panel-based genotype
+*refiner*, not as an exported phaser. Confirmed empirically —
 `chr10.vcf.gz` is 2,131/2,131 unphased, `all_filtered_in.vcf.gz` is 20,000/20,000 unphased,
 and no `PS`/`HP`/`|` appears anywhere.
 
@@ -65,18 +75,22 @@ Two consequences compound it:
 `merge_vcf_fields()` runs `bcftools annotate` with Beagle's output as the *base* file and
 `GT` absent from its `-c` list, so the merge does **not** overwrite GT. The merge is innocent.
 
-**Manuscript impact.** Methods state Beagle is used "to resolve **and phase** 1KGP-panel
-genotypes", and Results state CalicoST runs "on the same phased genotypes". As configured,
-no phased genotypes exist. This must be corrected regardless of whether the rework succeeds.
+**Manuscript impact at discovery (resolved 2026-09-13).** Methods had stated that Beagle was used
+"to resolve **and phase**" 1KGP-panel genotypes, and Results had described CalicoST as running
+"on the same phased genotypes". As configured, no phased target genotypes exist. The active guided
+manuscript and its Fig. 1 dossier now say genotype-posterior refinement and make no production
+haplotype-phasing claim.
 
 ### Why phasing is the right axis
 
-A haplotype *ratio* is conditioned on detection; a presence/absence call **is** a detection
-event. That is precisely the confound behind C1 — spot-level variant presence is a function of
-transcript capture, so recovered structure may be re-derived expression. Phased BAF is immune
-to that confound by construction. Phasing also supplies SparcalNet's first **independent label
-source** (read-backed phase), which is the fix for the label leakage that makes its current
-99.8% accuracy meaningless.
+A haplotype *ratio* is conditioned on detected allelic reads; a presence/absence call **is** a
+detection event. That is precisely the confound behind C1 — spot-level variant presence is a
+function of transcript capture, so recovered structure may be re-derived expression. Phased BAF
+can reduce this direct binary encoding of capture, but it is not immune to low depth, allelic
+dropout, allele-specific expression, or mapping bias and still needs coverage-aware sensitivity
+analyses. Read-backed phase would provide a label source orthogonal to the current heuristic
+labels, but it is not statistically independent of the underlying reads; leakage and
+read-selection boundaries would still need an explicit audit.
 
 ### Non-destructive rule (user decision 2026-08-23)
 
@@ -96,7 +110,7 @@ source** (read-backed phase), which is the fix for the label leakage that makes 
 
 | ID | Item | Depends on |
 |---|---|---|
-| **P-0** | Side-car re-run of Beagle with `niterations>0`, retaining raw phased output in a parallel tree. First deliverable is a **one-chromosome probe** answering: does Beagle emit phase at all on this data, and at what rate? | — |
+| **P-0** | **DONE (mechanism only).** The non-destructive chr10 probe showed that `niterations>0` under `gl=` still emits 0% phase, whereas a separate `gt=` pass emits pipes at 100% of heterozygotes. Exact records/unordered GT were preserved by `gl→gt`, but phase accuracy and stability were not established. | — |
 | **P-FEAS** | Feasibility count: het-pair distance distribution, UMI-linkage yield, and **what fraction of the somatic class has ≥2 ALT reads AND a phased het in linkage range**. Decides whether P-1/P-2 are a strategy or a footnote | P-0 |
 | **P-1** | Read-backed phase concordance → switch-error rate → germline validation with no clustering and no external truth | P-0, P-FEAS |
 | **P-2** | Haplotype-linkage somatic test: do ALT reads consistently carry one germline haplotype? Artifacts have no haplotype preference. A per-variant discriminator independent of the spatial cascade — the calibrated test C2 found missing | P-0, P-FEAS |
@@ -118,7 +132,9 @@ source** (read-backed phase), which is the fix for the label leakage that makes 
 
 ### Sequencing
 
-P-0 → P-FEAS → (X-1, X-2 in parallel, they need no phase) → P-2 → P-3 → P-5 → P-6.
+If a phase-derived analysis is reopened: P-0 (complete) → fixed-seed phase-stability/truth
+validation → P-FEAS → P-2/P-3 → P-5/P-6. Current v2.3 Beagle finalization instead proceeds on
+the phase-invariant GP/P(nonref) track; X-1 and X-2 do not depend on phase.
 
 ---
 

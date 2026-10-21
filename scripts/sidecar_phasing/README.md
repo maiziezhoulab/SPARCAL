@@ -11,10 +11,12 @@ that review happens.
 ## What this is
 
 `run_beagle_phased.py` reruns Beagle 4.1 on a single chromosome of a single sample with
-`niterations` and `impute` configurable (the shipped pipeline hardcodes `niterations=0`, which
-disables phasing iterations, and deletes Beagle's raw output before anyone can inspect it). This
-side-car does the opposite on both counts: `niterations` defaults to 5 (Beagle's own factory
-default), and the raw Beagle output is always retained, never deleted.
+`niterations`, `impute`, and input mode configurable. The shipped pipeline uses `gl=` with
+`niterations=0` and deletes Beagle's raw output before anyone can inspect it. The decisive switch
+for emitted phase is input mode: `gl=` and `gtgl=` return unphased estimated GT even when extra
+phasing iterations run, whereas a separate `gt=` pass emits pipe-delimited GT. The side-car
+defaults to five additional iterations for diagnosis and always retains the raw Beagle output;
+neither choice alone turns a `gl=` result into phased output.
 
 Reference-panel resolution and the "does this chromosome have any marker overlap with the 1000
 Genomes panel" guard are copied (re-typed, not imported) from `BeaglePipeline` in

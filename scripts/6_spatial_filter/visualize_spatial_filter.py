@@ -95,6 +95,16 @@ DATASET_CONFIGS = {
         "has_header": True,
         "x_flip":     True,
     },
+    "NCCE": {
+        "base_path":   "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "output_base": "/data/maiziezhou_lab/leiy4/snv_calling/data/ncce",
+        "spatial_subdir": "NCCE_{section_id}/outs/spatial",
+        "position_file": "tissue_positions.csv",
+        "scale_file":    "scalefactors_json.json",
+        "image_file":    "tissue_hires_image.png",
+        "has_header": True,
+        "x_flip":     False,
+    },
 }
 
 
@@ -117,6 +127,13 @@ def resolve_spatial_files(dataset_upper: str, section_id: str) -> Tuple[str, str
     elif dataset_upper == "DCIS":
         outs_dir     = cfg["spaceranger_dir_patterns"][section_id]
         spatial_base = os.path.join(cfg["base_path"], outs_dir, cfg["spatial_subdir"])
+        pos   = os.path.join(spatial_base, cfg["position_file"])
+        scale = os.path.join(spatial_base, cfg["scale_file"])
+        img   = os.path.join(spatial_base, cfg["image_file"])
+
+    elif dataset_upper == "NCCE":
+        spatial_base = os.path.join(
+            cfg["base_path"], cfg["spatial_subdir"].format(section_id=section_id))
         pos   = os.path.join(spatial_base, cfg["position_file"])
         scale = os.path.join(spatial_base, cfg["scale_file"])
         img   = os.path.join(spatial_base, cfg["image_file"])
@@ -382,7 +399,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--dataset", required=True,
-                        choices=["dlpfc", "p4_tumor", "p6_tumor", "dcis"],
+                        choices=["dlpfc", "p4_tumor", "p6_tumor", "dcis", "ncce"],
                         help="Dataset name (case-insensitive)")
     parser.add_argument("--section_id", required=True,
                         help="Section ID (e.g., 1 for P4/P6, 151507 for DLPFC, dcis1 for DCIS)")

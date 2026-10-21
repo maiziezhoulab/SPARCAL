@@ -256,7 +256,7 @@ files found" until step 0 has produced the deduped BAMs.**
 Dataset configs (base paths, BAM patterns, reference genome, spatial file locations) are duplicated in each pipeline script's `DATASET_CONFIGS` dict. When adding a new dataset, update every script. Supported datasets:
 
 - **DLPFC** – GRCh38 (no `chr` prefix in chromosomes), sections 151507–151510 and 151669–151676
-- **P4_TUMOR / P6_TUMOR** – hg19 (`chr` prefix), Visium breast tumor data
+- **P4_TUMOR / P6_TUMOR** – hg19 (`chr` prefix), Visium **cutaneous squamous cell carcinoma (cSCC)**, Ji et al. 2020 (WES truth via STmut); NOT breast — only DCIS is breast
 - **DCIS** – GRCh38 (`chr` prefix), ductal carcinoma in situ
 - **OVAR_P5** – GRCh38 (`chr` prefix, `FFPE_VISIUM` reference). **Ovarian cancer, one patient,
   one section** (`P5_sr13`, 2,108 per-barcode BAMs). Colleague-generated; the SpaceRanger `outs/`
@@ -265,7 +265,12 @@ Dataset configs (base paths, BAM patterns, reference genome, spatial file locati
   spatial files are read from the colleague's outs via `spatial_base_path`. Headerless
   `tissue_positions_list.csv`. Runners: `run_slurm/ovar_p5/` (numbered 0–7 + `submit_chain_2_7.sh`).
   Pipeline has been run through the matrix step.
-- **NCCE** – GRCh38 (`chr` prefix, `FFPE_VISIUM` reference). **Japanese NCCE gastric-cancer cohort —
+- **NCCE** – ⛔ **PROBE-BASED FFPE Visium — NOT usable for SNV claims (verified 2026-10-19:**
+  SpaceRanger outs carry `probe_set.csv`, and metrics report "Reads Mapped to Probe Set" /
+  "Q30 Bases in Probe Read"). Reads are templated by designed probes, not the tissue RNA. Excluded
+  from the SPARCAL paper. (`FFPE_VISIUM` is only a reference-key name and does not mean the data
+  is FFPE: OVAR_P5 uses the same key but is whole-transcriptome, with "Q30 Bases in RNA Read" and
+  `target_set_name: null`.) GRCh38 (`chr` prefix, `FFPE_VISIUM` reference). **Japanese NCCE gastric-cancer cohort —
   MULTIPLE PATIENTS, SERIAL BIOPSIES**: 5 patients (6, 8, 10, 11 non-responders; **14 responder**)
   × 3 serial sections each (A/B/C = sampling timepoints) = **15 sections**, 5,202 in-tissue spots
   total (180–751 per section). This is the first multi-patient *and* first longitudinal dataset in

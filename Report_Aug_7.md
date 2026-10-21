@@ -163,26 +163,106 @@ advisor's view; no further Story A text will be written until it is decided.**
 
 ## 6. Two new datasets now in the project
 
-Both have been run through the SPARCAL pipeline to the matrix step and are documented in
+Both were run through the SPARCAL pipeline to the matrix step and are documented in
 [CLAUDE.md](CLAUDE.md).
 
 - **OVAR_P5** — ovarian cancer, **one patient, one section** (`P5_sr13`, 2,108 spot BAMs), GRCh38.
+  Standard **poly-A capture** Visium. Behaves normally; currently underused (see §6.2).
 - **NCCE** — Japanese **gastric-cancer** cohort: **5 patients × 3 serial sections = 15 sections**,
   5,202 in-tissue spots. Patients 6/8/10/11 non-responders, **patient 14 responder**; A/B/C are
-  serial sampling timepoints. This is the project's first multi-patient *and* first longitudinal
-  dataset, so the 15 sections are **nested within 5 patients** and must not be treated as 15
-  independent samples.
+  serial sampling timepoints. **Probe-based (RNA-templated ligation) chemistry — see §6.1. We are
+  withdrawing it as a results dataset.**
 
-An exploratory NCCE analysis already exists
-(`data/ncce/biological_analysis/report_v1/`). Its most interesting observation is case-level: in
-patient 14, the sole responder, candidate-locus burden fell **19 → 10 → 8** across serial sections
-and positive-spot fraction fell **29.4% → 18.0% → 10.0%**, while median UMI *rose* 2,013 → 9,678 →
-49,109 — so the decline is not explained by losing coverage. No exact locus is shared across the
-three timepoints, so this supports changing spatial-pattern burden, **not** clonal lineage tracking.
+### 6.1 🚨 NCCE is probe-based, and probe chemistry cannot carry SNVs (found 2026-08-07)
 
-Two cautions carried in the docs: copyKAT state was an **input** to the NCCE spatial filter, so
-copyKAT/SPARCAL agreement is internal consistency and never independent validation; and section
-median UMI ranges from **178 to 55,844**, so coverage adjustment is mandatory in any NCCE statistic.
+NCCE's SpaceRanger `outs/` contain **`probe_set.csv` — Visium Human Transcriptome Probe Set v2.0**
+(RNA-templated ligation, 54,581 probes), and its metrics report *"Reads Mapped to Probe Set: 0.98"*
+rather than *"Reads Mapped to Genome"*. In RTL chemistry **the sequenced molecule is a synthetic
+probe oligo carrying reference sequence**, not the patient's transcript. Verified three ways, with
+**OVAR_P5 as a matched poly-A positive control on the same pipeline, reference and code path**:
+
+| Test (chr1:1–50 Mb unless noted) | NCCE_14A (probe) | OVAR_P5 (poly-A) |
+|---|---|---|
+| Covered-interval width — median / p90 / max (dp≥5) | **50 / 50 / 99 bp** | 102 / 328 / 2,736 bp |
+| Callable bases (dp≥5) | 84,511 | 1,398,486 |
+| Median depth *inside* the callable footprint | **96** | 23 |
+| Common 1000G SNPs per kb of footprint | 0.77 | 1.68 |
+| **Common-SNP detection, genome-wide, dp≥10** | **12/1,588 = 0.8%** | **16,715/65,930 = 25.4%** |
+
+The 50 bp median interval is exactly the ligated probe-pair footprint. The detection gap is **not a
+coverage artifact — it widens with depth**, which is the opposite of what a coverage effect does:
+
+| depth band | NCCE detection | OVAR detection |
+|---|---|---|
+| 10–20 | 1.4% | 20.5% |
+| 20–50 | 1.6% | 26.5% |
+| 50–200 | 0.2% | 36.3% |
+| **≥200** | **0.0% (0 / 254)** | 37.9% |
+
+At depth ≥200 — where detection should be easiest — NCCE finds **zero** of 254 common SNPs sitting
+inside its own callable footprint. Two compounding mechanisms explain it: 10x designs probes to
+**avoid** common polymorphisms (hence 0.77 vs 1.68 panel sites per kb), and a mismatch under the
+probe **blocks ligation**, so the variant molecule drops out instead of being sequenced. The assay
+does not merely miss variants — it *selects against* them.
+
+Third, independent check on the **final callset**: the `1000G`/`defined` class is ~100%
+panel-matching *by construction*. Across all 15 NCCE sections it is **29.8%** (range 20.7–45.7%)
+versus **88.3%** for OVAR_P5. Not a coordinate-offset bug — only 3–4% of non-members lie within
+±5 bp of a panel site.
+
+**Consequence.** The 133 NCCE somatic-pattern SNVs are not demonstrably genotype, so the
+patient-14 responder narrative (19 → 10 → 8 loci; 29.4% → 18.0% → 10.0% of spots) must be
+withdrawn as a mutation result. It has a mundane competing explanation: probe coverage tracks
+target-gene expression, which is itself spatial, so "hotspots" can be expression domains. Section
+14A's sequencing saturation is 0.98, so the rising-UMI/falling-burden trend is also consistent with
+better consensus suppressing error-driven calls. `data/ncce/biological_analysis/report_v1/` should
+stop recommending a manuscript subsection; its existing cautions (copyKAT circularity, UMI range
+178–55,844) are real but do not reach this, because they assume the underlying calls carry
+mutation signal.
+
+**Nothing about SPARCAL failed** — it ran all 15 sections without error, which is precisely the
+hazard. The constraint applies identically to SpatialSNV, Monopogen, SpaceTracer and any other
+RNA-based caller. It is a **field-level assay constraint, not a SPARCAL weakness**.
+
+**✅ All previously published datasets were checked and are clean.** No `probe_set.csv` and no
+probe metrics keys anywhere in P4/P6/DCIS1/DCIS2; the assay-agnostic interval test confirms it:
+
+| dataset | median / p90 / max interval | chemistry |
+|---|---|---|
+| DLPFC 151507 | 83 / 356 / 2,146 | poly-A |
+| P4 rep1 | 98 / 312 / 1,885 | poly-A |
+| P6 rep1 | 111 / 305 / 1,312 | poly-A |
+| DCIS1 | 105 / 384 / 2,895 | poly-A |
+| DCIS2 | 120 / 367 / 2,702 | poly-A |
+| OVAR_P5 | 102 / 328 / 2,736 | poly-A |
+| **NCCE (all 15)** | **50 / 50 / 99** | **probe (RTL)** |
+
+**No existing paper claim is affected.** Going forward the onboarding rule is *check for
+`probe_set.csv`* — **not** "avoid FFPE". The discriminator is the probe set, not the fixation:
+CytAssist runs on fresh-frozen and is still probe-based.
+
+**Recommendation — drop NCCE as a results dataset, keep one paragraph of scope.** Dropping the
+biological story is not in question. But the scope statement is worth a paragraph plus an optional
+SI panel, for three reasons: (i) it is the only result in the current plan with **no coverage
+confound** — NCCE has *higher* in-footprint depth and still loses, so it is immune to the density
+critique in §5; (ii) it pre-empts the obvious "does this work on FFPE?" review question with data
+rather than silence; (iii) framed as a field constraint it costs SPARCAL nothing. The honest
+counter-cost is that it invites "so your method only works on poly-A" — true, but true of the whole
+field, and better answered on our terms. **Decision D-NCCE below.**
+
+### 6.2 OVAR_P5 is the more useful of the two, and is currently underused
+
+Its only present role is a SPARCALViewer demo profile. It is a clean poly-A tumor section —
+2,108 spots, 188,742 unique variants, 61,850 1000G-defined at **88.3% panel purity**, full
+four-class matrices plus exome-restricted variants. Two candidate uses, neither yet scoped:
+
+- **Story A density rebuttal (§5).** An independent poly-A tumor section that is neither DLPFC nor
+  from SpatialSNV's own published data — it widens the base beyond the 12 DLPFC sections if we take
+  option (b).
+- **Story C4 third sample.** Region-detection ARI currently rests on DCIS2 and P6, where the
+  ranking flips and nothing separates from coverage; a third sample is worth more than another
+  metric on the same two. **Blocker:** no tumor annotation was supplied (`MANIFEST.json`). CalicoST
+  clone calls exist for this patient — worth asking Pankaj.
 
 ---
 
@@ -194,6 +274,10 @@ median UMI ranges from **178 to 55,844**, so coverage adjustment is mandatory in
 3. **HLA exclusion presentation** — recommendation is to report both raw and xMHC-excluded, framing
    the cascade as tumor-type-specific (robust in high-TMB cSCC, HLA-driven/absent in low-TMB DCIS).
 4. **SPARCALViewer repository split** — confirm, then it can be done.
+5. **D-NCCE (§6.1)** — NCCE is withdrawn as a results dataset either way. Does the probe-chemistry
+   scope statement go in the paper (one paragraph, optional SI panel), or do we drop NCCE silently?
+6. **OVAR_P5 scope (§6.2)** — leave as a viewer demo, or pull it into Story A and/or C4? The C4 use
+   needs a tumor annotation we do not currently have.
 
 Also outstanding on our side, not blocked on anyone: the Methods section still describes the
 pre-2026-07-28 direction and needs rewriting; Fig. 1 is a placeholder pending the author-drafted

@@ -25,7 +25,7 @@ Usage:
       --bam /lfs/.../DCIS1/.../outs/possorted_genome_bam.bam \
       --clone_labels /data/maiziezhou_lab/leiy4/CalicoST/DCIS1/calicost/clone3_rectangle0_w1.0/clone_labels.tsv
 """
-import argparse, gzip, os, sys
+import argparse, gzip, os, subprocess, sys, tempfile
 import numpy as np
 import pysam
 
@@ -50,6 +50,12 @@ def main():
     ap.add_argument("--min-group-dp", type=int, default=5,
                     help="min pooled ref+alt reads in EACH of tumor/normal to keep a variant (default 5)")
     ap.add_argument("--max-depth", type=int, default=200000)
+    ap.add_argument("--min-base-quality", type=int, default=13)
+    ap.add_argument("--min-mapping-quality", type=int, default=20)
+    ap.add_argument("--out-dir", default=None,
+                    help="output directory (default: the production gmm_subfilter directory)")
+    ap.add_argument("--baf-max", type=float, default=None,
+                    help="restrict the direct BAM scan to UPVs at or below this pseudobulk BAF")
     args = ap.parse_args()
 
     sec = os.path.join(BASE[args.dataset], args.section_id)
@@ -58,7 +64,7 @@ def main():
                            "germline_denovo.vcf.gz")
     gmm_tsv = os.path.join(sec, "spatial_filter_purity", qf, "germline", "denovo",
                            "gmm_subfilter", "upv_gmm_classification.tsv")
-    out_dir = os.path.dirname(gmm_tsv)
+    out_dir = args.out_dir or os.path.dirname(gmm_tsv)
     os.makedirs(out_dir, exist_ok=True)
 
     # ── UPV variants: chrom(bare) -> {pos1: [(ref,alt), ...]} ── + 7c BAF/class ──
@@ -77,6 +83,19 @@ def main():
         for l in open(gmm_tsv).read().splitlines()[1:]:
             x = l.split("\t"); c, p, r, a = x[0].split("_")
             baf[(c, p, r, a)] = float(x[1]); cls[(c, p, r, a)] = x[6]
+    if args.baf_max is not None:
+        restricted = {}
+        for chrom, posmap in upv_at.items():
+            for pos1, alleles in posmap.items():
+                kept = [
+                    (ref, alt) for ref, alt in alleles
+                    if baf.get((chrom, str(pos1), ref, alt), float("inf")) <= args.baf_max
+                ]
+                if kept:
+                    restricted.setdefault(chrom, {})[pos1] = kept
+        upv_at = restricted
+        n_upv = sum(len(v) for d in upv_at.values() for v in d.values())
+        print(f"restricted to pseudobulk BAF <= {args.baf_max}: {n_upv} variants")
 
     # ── tumor/normal spot groups by tumor_proportion tertiles ──
     tp = {}
@@ -97,39 +116,65 @@ def main():
     print(f"purity tertiles: normal<= {lo:.3f} (n={sum(g=='normal' for g in group.values())}), "
           f"tumor>= {hi:.3f} (n={sum(g=='tumor' for g in group.values())})")
 
-    # ── BAM pileup: pool ref/alt reads per variant per group via CB tag ──
+    # ── BAM scan: pool ref/alt reads per variant per group via CB tag ──
+    # Stream every alignment overlapping any target exactly once.  This avoids
+    # thousands of indexed one-base pileup calls, which were prohibitively slow
+    # on the 16-GB DCIS BAMs.
     cnt = {}  # key -> [t_ref, t_alt, n_ref, n_alt]
     bam = pysam.AlignmentFile(args.bam, "rb")
     bam_contigs = set(bam.references)
-    done = 0
+    target_map = {}
+    bed_lines = []
     for cb_chrom, posmap in upv_at.items():
         bam_chrom = cb_chrom if cb_chrom in bam_contigs else ("chr" + cb_chrom)
         if bam_chrom not in bam_contigs:
             continue
-        for pos1 in sorted(posmap):
-            variants = posmap[pos1]
-            for pcol in bam.pileup(bam_chrom, pos1 - 1, pos1, truncate=True,
-                                   max_depth=args.max_depth, min_base_quality=0):
-                for pr in pcol.pileups:
-                    if pr.is_del or pr.is_refskip or pr.query_position is None:
-                        continue
-                    aln = pr.alignment
-                    if not aln.has_tag("CB"):
-                        continue
-                    g = group.get(aln.get_tag("CB"))
-                    if g not in ("tumor", "normal"):
-                        continue
-                    base = aln.query_sequence[pr.query_position]
-                    for (ref, alt) in variants:
-                        k = (cb_chrom, str(pos1), ref, alt)
-                        c = cnt.setdefault(k, [0, 0, 0, 0])
-                        if base == alt:
-                            c[1 if g == "tumor" else 3] += 1
-                        elif base == ref:
-                            c[0 if g == "tumor" else 2] += 1
-            done += 1
-            if done % 500 == 0:
-                print(f"  scanned {done}/{n_upv} positions")
+        target_map[bam_chrom] = posmap
+        bed_lines.extend(f"{bam_chrom}\t{pos1 - 1}\t{pos1}\n" for pos1 in sorted(posmap))
+    bam.close()
+    with tempfile.NamedTemporaryFile("w", suffix=".bed", delete=False) as bed:
+        bed.writelines(bed_lines)
+        bed_path = bed.name
+    samtools = os.path.join(PROJECT_ROOT, "apps", "samtools")
+    proc = subprocess.Popen(
+        [samtools, "view", "-u", "-L", bed_path, "-q", str(args.min_mapping_quality), args.bam],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        selected = pysam.AlignmentFile(proc.stdout, "rb")
+        n_alignments = 0
+        for aln in selected.fetch(until_eof=True):
+            n_alignments += 1
+            if not aln.has_tag("CB"):
+                continue
+            g = group.get(aln.get_tag("CB"))
+            if g not in ("tumor", "normal"):
+                continue
+            posmap = target_map.get(aln.reference_name, {})
+            sequence = aln.query_sequence
+            qualities = aln.query_qualities
+            for qpos, rpos in aln.get_aligned_pairs(matches_only=True):
+                pos1 = rpos + 1
+                variants = posmap.get(pos1)
+                if not variants or qpos is None:
+                    continue
+                if qualities is not None and qualities[qpos] < args.min_base_quality:
+                    continue
+                base = sequence[qpos].upper()
+                for ref, alt in variants:
+                    k = (canon := aln.reference_name.removeprefix("chr"), str(pos1), ref, alt)
+                    c = cnt.setdefault(k, [0, 0, 0, 0])
+                    if base == alt:
+                        c[1 if g == "tumor" else 3] += 1
+                    elif base == ref:
+                        c[0 if g == "tumor" else 2] += 1
+            if n_alignments % 1000000 == 0:
+                print(f"  streamed {n_alignments:,} target-overlapping alignments")
+        selected.close()
+        if proc.wait() != 0:
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    finally:
+        os.unlink(bed_path)
 
     # ── ΔBAF per variant (pooled, depth-weighted) ──
     rows = []
@@ -147,16 +192,24 @@ def main():
         f.write("chrom_pos_ref_alt\tbaf\tdelta_baf\tt_alt\tt_dp\tn_alt\tn_dp\t"
                 "vaf_tumor\tvaf_normal\tcurrent_class\n")
         for k, b, db, ta, tdp, na, ndp, cc in rows:
-            f.write(f"{'_'.join(k)}\t{b:.4f}\t{db:.4f}\t{ta}\t{tdp}\t{na}\t{ndp}\t"
-                    f"{ta/tdp:.4f}\t{na/ndp:.4f}\t{cc}\n")
+            f.write(f"{'_'.join(k)}\t{b:.8f}\t{db:.8f}\t{ta}\t{tdp}\t{na}\t{ndp}\t"
+                    f"{ta/tdp:.8f}\t{na/ndp:.8f}\t{cc}\n")
+    with open(os.path.join(out_dir, "PARAMETERS.txt"), "w") as f:
+        f.write(f"bam={args.bam}\nclone_labels={args.clone_labels}\n")
+        f.write(f"min_group_dp={args.min_group_dp}\nmin_base_quality={args.min_base_quality}\n")
+        f.write(f"min_mapping_quality={args.min_mapping_quality}\nmax_depth={args.max_depth}\n")
+        f.write(f"baf_max={args.baf_max}\n")
+        f.write(f"n_scanned_upv={n_upv}\n")
 
     # ── report + plot ──
     dbaf = np.array([r[2] for r in rows])
     bafs = np.array([r[1] for r in rows])
     issom = np.array([r[7] == "somatic_candidate" for r in rows])
     print(f"\nΔBAF quantiles [5,25,50,75,95]: {np.round(np.quantile(dbaf,[.05,.25,.5,.75,.95]),3)}")
-    print(f"ΔBAF mean | current somatic_candidate: {dbaf[issom].mean():+.3f}  "
-          f"germline_like: {dbaf[~issom].mean():+.3f}")
+    somatic_mean = dbaf[issom].mean() if issom.any() else float("nan")
+    germline_mean = dbaf[~issom].mean() if (~issom).any() else float("nan")
+    print(f"ΔBAF mean | current somatic_candidate: {somatic_mean:+.3f}  "
+          f"germline_like: {germline_mean:+.3f}")
     print(f"ΔBAF > 0.05 (tumor-enriched): {(dbaf>0.05).sum()}  "
           f"| of current somatic set: {(dbaf[issom]>0.05).sum()}/{issom.sum()}")
 

@@ -95,3 +95,6 @@ cosmic_amb/
 data_sidecar_phased/
 references/
 hs_err_pid*.log
+*.orig
+*.rej
+doc/figures/source/run.log

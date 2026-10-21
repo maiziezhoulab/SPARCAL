@@ -12,6 +12,73 @@ explains the novel step — **how a de-novo SNV is partitioned in the spatial
 filter**, which the old figure draws as an abstract score scatter that no longer
 even matches the code.
 
+## 0. Current pipeline as run (updated 2026-10-09) — read this first
+
+§1–§8 below date from June 2026. Where they disagree with this section, **this section wins**.
+Source of truth for wording is the Methods of `SPARCAL_pnas_2026/PNAS/PaperDraftGuided.tex`.
+Stale items below: §4.1 "BAF-GMM sub-filter (NEW TODO)" is no longer a pipeline step (it became the
+SI UPV assessment); §7 CHIP rule-out is an optional user filter, not a default step; §8.3 per-spot
+profiling describes presence as "a record exists", which is the bug fixed in step S6+ below.
+
+### 0.1 Steps (code names as in the job chain and the run console)
+
+| Step | Name | What it decides | Notes for the figure |
+|---|---|---|---|
+| S1 | Candidate calling | pooled mpileup over all spots → candidate SNVs; pooled 0/0 genotype gate | input = aligned Visium BAM only; no Mutect2 |
+| S2 | Beagle routing | Beagle + 1KGP refine genotype posteriors (`gl=`, `impute=false`; unphased GT+GP) for exact panel alleles → **in-panel germline** route | DLPFC germline benchmark uses this route only (no somtop25) |
+| S3 | Genotype shifting | corrected genotypes for panel sites → training labels | |
+| S4 | Sequence-error model | 12 genotype-transition patterns, pattern-specific BAF/depth thresholds | |
+| S5 | SparcalNet | MLP (64, 32) classifies non-panel candidates: non-variant / het / hom | |
+| S6 | Per-spot profiles | per-spot BAM + VCF at every retained candidate | AD counted per read, no UMI collapse |
+| **S6+** | **Molecule recount (new, 2026-10-09)** | per spot and locus: primary reads only, collapsed by UB, majority base per molecule → `ref_mol`, `alt_mol` | `scripts/presence_fix/recount_spot_alleles.py` |
+| S7 | Spatial filter | CalicoST purity / clones / CNV-LOH; Stage 1 uniformity + prevalence → UPV; Stage 2 votes (δ, ε, ζ, θ; top 20% each; top 10% of survivors) → somatic, rest ambiguous | ambiguous never shown |
+| D1 | Matrices | spot × locus matrices per class; unbinned (UMAP) and 250 kb bins (ARI) | |
+| D2 | Downstream | clustering (ARI, KNN purity, UMAP), region detection, COSMIC, SPARCALViewer | |
+
+### 0.2 The presence rule (open decision, 2026-10-09)
+
+Before 2026-10-09 every production matrix set a spot to 1 wherever S6 wrote a record, i.e. wherever
+any read covered the locus. Only 15–30% of P4/P6 and DLPFC 1s, and 8.4% of DCIS2 somatic 1s, carry an
+ALT read. Arms under test (adopt a new rule only if it performs better):
+
+- **G0 / record** — current behaviour (coverage = presence).
+- **G1** — keep loci with ≥1 ALT molecule in at least one spot; values unchanged.
+- **G2 / alt_mol** — spot = 1 only if it has ≥1 ALT molecule at the locus.
+
+DLPFC (G0–G2), P4/P6 step 7 (record / alt_mol ± CalicoST) and the Fig. 5 DCIS/P6 matrices
+(G0–G2) are being run. **The figure must show whichever rule is adopted**; until then draw S6+ as a
+step but leave its label to the decision.
+
+### 0.3 What Fig. 1 (P1) should show — draft list for the author to edit
+
+1. **Single sample input:** aligned 10x Visium BAM (+ spot coordinates, reference, 1KGP panel). Mark
+   "no Mutect2 / no external callset".
+2. **Primary pathway, left to right:** S1 candidates → S2 Beagle/1KGP routing (in-panel germline,
+   blue) → S4–S5 sequence-error model + SparcalNet on non-panel candidates → S6/S6+ per-spot
+   molecule-level allele counts.
+3. **Secondary pathway (parallel):** CalicoST → per-spot purity, clone labels, allele-specific CNV/LOH;
+   thick labelled arrow into Stage 2 only.
+4. **Spatial filter (hero panel):** Stage 1 (purity-independent) → **UPV** (purple, uninterpreted
+   label; interpretation deferred to SI); Stage 2 vote → **somatic** (red); ambiguous not drawn.
+   Two small spot-map icons: ubiquitous (UPV) vs focal (somatic).
+5. **Outputs:** spot × SNV matrices (unbinned / 250 kb), class VCFs, viewer overlays.
+6. **Downstream icons:** layer clustering (DLPFC), tumor-region detection (DCIS/P6), COSMIC context,
+   SPARCALViewer.
+7. Colours fixed: germline blue, UPV purple, somatic red (see `CLAUDE.md` house palette in the
+   manuscript repo for the exact hex values). Do not put the ambiguous bucket or any accuracy number
+   in the schematic.
+
+### 0.4 Drawing requirements (for Codex)
+
+- Editable vector master: **SVG** (text as text, not paths) plus **PDF** export with embedded
+  TrueType text (`pdf.fonttype 42` if drawn in Matplotlib); PNG at 300 dpi for preview only.
+- Arial for all non-gene text (see the Arial gate in the manuscript `CLAUDE.md`).
+- No figure title in the artwork; panel letters only. Caption lives in the `.tex`.
+- Write to `SPARCAL_pnas_2026/figs/<new version dir>/fig1_pipeline_overview.{svg,pdf,png}` and update
+  `figures/fig1-pipeline.md` and `FIGURE_PROVENANCE.md`.
+
+---
+
 ## Decisions locked (2026-06-01)
 
 - **Naming = neutral / behavioral.** Categories are named by *spatial behavior*,
@@ -64,7 +131,7 @@ even matches the code.
 ## 3. Proposed layout (mockup)
 
 ```
-┌────────────────── Beagle phasing + imputation (1000 Genomes panel) ──────────────────┐
+┌────────────── Beagle genotype-posterior refinement (1000 Genomes panel) ──────────────┐
 ▼                                                                                       ▼
 ┌─────────────────┐   ┌───────────────────────────────┐   ┌───────────────────────────┐
 │ 1. Preprocessing│ → │ 2. Genotype correction &      │   │  reference split:         │

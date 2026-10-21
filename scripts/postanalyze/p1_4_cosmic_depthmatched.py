@@ -1,48 +1,10 @@
 #!/usr/bin/env python3
-"""P1-4: depth-matched COSMIC contrast as the primary somatic-vs-unresolved analysis.
+"""Historical COSMIC class-contrast sensitivity analysis.
 
-Background (PAPER_PLAN_DEPRECATED.md sec 3.1, PAPER_PLAN.md sec 4.8/M5): a 2026-07-13
-logistic control on P4/P6 (`cosmic_hit ~ is_somatic + log10(DP)`, xMHC excluded)
-already found the enrichment null: OR 1.04 p=0.56 (P4), OR 1.00 p=0.95 (P6). That
-result never became the primary analysis and DCIS1/DCIS2 were never run through
-it. This script:
-
-  1. Recomputes the depth control for all four sections (P4, P6, DCIS1, DCIS2),
-     not just P4/P6.
-  2. Makes it the PRIMARY analysis: reported first, before the raw contrast.
-  3. Replaces the one-sided Fisher exact test on the raw variant-count table
-     with a permutation null over variants (variants are not independent
-     observations -- they cluster genomically, e.g. COSMIC hotspot genes and
-     multiple SNVs called at the same locus/gene, so the binomial-independence
-     assumption behind Fisher's exact test is not credible here).
-  4. Reports xMHC (chr6:28-34 Mb, both builds, same interval as fig4/5) both
-     excluded (default/primary) and included (sensitivity).
-
-DEPTH-MATCHED DESIGN
-    Per-variant depth = INFO/DP from the pooled pre-classification mpileup VCF
-    (`output_VCFs/mpileup_multi_bam/baseQ0mapQ0/merged_sorted_gt.vcf.gz`), the
-    same source used by the original 2026-07-13 control and by
-    somatic_evidence_package.py's "our RNA depth" column.
-    (a) Logistic regression `cosmic_hit ~ is_somatic + log10(DP+1)` -- Wald test
-        on the is_somatic coefficient, reported as an odds ratio (continuity
-        with the 2026-07-13 numbers).
-    (b) A depth-STRATIFIED permutation null: bin variants into the project's
-        standard RNA-depth strata (1-3, 4-9, 10-29, 30+ reads), and within each
-        stratum permute the somatic/unresolved label 10,000 times (marginal
-        counts per stratum held fixed), recomputing a depth-standardized
-        (Mantel-Haenszel) rate ratio each time. The empirical p-value is the
-        fraction of permuted ratios at least as extreme as observed. This
-        controls for depth by construction (matching) rather than by a
-        parametric depth term, and treats within-stratum shuffling as the
-        exchangeability unit, which is the closest defensible approximation to
-        "not independent observations" without a full LD/genomic-block model.
-
-RAW (UNADJUSTED) DESIGN
-    Global permutation null: shuffle the somatic/unresolved label across all
-    variants (10,000 permutations, group sizes held fixed), recompute the raw
-    rate ratio each time, empirical two-sided p-value from the null
-    distribution. Reported for direct contrast with the depth-matched design,
-    never as the headline.
+This historical analysis is retained only for reproducibility and is not part
+of the paper's caller comparison. The current plan reports allele-exact COSMIC
+catalogue membership for all callers on the same basis as descriptive
+corroboration, not as variant-level validation.
 
 Run (env snv_caller): python scripts/postanalyze/p1_4_cosmic_depthmatched.py --outdir <dir>
 """
@@ -182,7 +144,7 @@ def build_table(sample: str, cfg: dict) -> pd.DataFrame:
 
 
 def raw_permutation_test(df: pd.DataFrame, rng: np.random.Generator):
-    """Global label-permutation null, no depth control.
+    """Global label-permutation null.
 
     Drawing n_som labels at random (without replacement) from the pooled
     somatic+unresolved variant set and counting how many are COSMIC hits is
@@ -242,7 +204,7 @@ def depth_matched_permutation_test(df: pd.DataFrame, rng: np.random.Generator):
     n_som_b-sized draw (without replacement, labels shuffled) is exactly
     Hypergeometric(ngood=h_total_b, nbad=n_b-h_total_b, nsample=n_som_b);
     drawing N_PERM samples per stratum and recombining with the MH formula
-    gives the depth-matched permutation null directly, without materializing
+    gives the stratified permutation null directly, without materializing
     10,000 explicit shuffles of up to ~6e5 variants.
     """
     df = df.dropna(subset=["depth_bin"]).copy()
@@ -327,12 +289,12 @@ def main():
             raw = raw_permutation_test(sub, rng)
             perm_rows.append({"sample": sample, "analysis": "raw", "xmhc": xmhc_label, **raw})
 
-            # -- depth-matched: stratified permutation --
+            # -- stratified permutation sensitivity analysis --
             matched_perm = depth_matched_permutation_test(sub, rng)
             perm_rows.append({"sample": sample, "analysis": "depth_matched_stratified_permutation",
                               "xmhc": xmhc_label, **matched_perm})
 
-            # -- depth-matched: logistic control (continuity with 2026-07-13 numbers) --
+            # -- logistic sensitivity model (continuity with 2026-07-13 numbers) --
             logit = logistic_depth_control(sub)
             matched_rows.append({"sample": sample, "xmhc": xmhc_label, **logit})
 
