@@ -63,6 +63,13 @@ DATASET_CONFIGS = {
         "has_sections": True,
         "section_ids": ["P5_sr13"],
         "reference": "CHR_PREFIX"
+    },
+    "NCCE": {
+        "base_path": "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "CHR_PREFIX"
     }
 }
 
@@ -75,10 +82,12 @@ class GenotypeMetrics:
     alt: str
 
 class BaseGenotypeAnalyzer:
-    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", section_id: str = None):
+    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0",
+                 section_id: str = None, section_root: str = None):
         self.dataset_name = dataset_name
         self.quality_filter = quality_filter
         self.section_id = section_id
+        self.section_root = os.path.abspath(section_root) if section_root else None
         self.base_dir = "/data/maiziezhou_lab/leiy4/snv_calling"
         self.validate_dataset_config()
         self.setup_environment()
@@ -115,7 +124,9 @@ class BaseGenotypeAnalyzer:
         
         # Setup paths based on dataset configuration
         dataset_config = DATASET_CONFIGS[self.dataset_name]
-        if dataset_config["has_sections"]:
+        if self.section_root:
+            self.output_base = self.section_root
+        elif dataset_config["has_sections"]:
             self.output_base = os.path.join(
                 self.base_dir,
                 dataset_config["output_dir"].format(section_id=self.section_id)
@@ -153,6 +164,13 @@ class BaseGenotypeAnalyzer:
         beagle_vcf = os.path.join(self.beagle_vcf_dir, f"{chromosome}.vcf.gz")
 
         print(f"Analyzing {self.__class__.__name__} for {chromosome}")
+        # A sparse input can have no markers on this chromosome.  The Beagle
+        # wrapper records that condition without emitting a VCF; there are no
+        # genotype transitions to analyze, so skip it rather than failing the
+        # entire section.
+        if not os.path.exists(beagle_vcf):
+            print(f"No Beagle VCF for {chromosome}; skipping empty chromosome.")
+            return False
         try:
             with gzip.open(beagle_vcf, 'rt') as beagle:
                 beagle_variants = self._load_beagle_variants(beagle, chromosome)
@@ -161,6 +179,7 @@ class BaseGenotypeAnalyzer:
             
             with gzip.open(orig_vcf, 'rt') as orig:
                 self._process_original_variants(orig, beagle_variants, chromosome)
+            return True
                 
         except Exception as e:
             print(f"Error processing {chromosome}: {str(e)}")
@@ -193,7 +212,7 @@ class BaseGenotypeAnalyzer:
     def extract_metrics(self, info_str: str, format_str: str, value_str: str) -> Tuple[Optional[float], Optional[int]]:
         """Extract BAF and depth with dataset-specific handling"""
         # Handle different VCF formats based on dataset
-        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS", "OVAR_P5"]:
+        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS", "OVAR_P5", "NCCE"]:
             # Extract BAF from FORMAT column
             baf_str = self.extract_format_field(format_str, value_str, "BAF")
             baf = float(baf_str) if baf_str is not None else None
@@ -216,10 +235,27 @@ class BaseGenotypeAnalyzer:
         return baf, depth
     
     def extract_genotype(self, format_str: str, value_str: str) -> Optional[str]:
-        """Extract GT field from VCF FORMAT/VALUE strings"""
+        """Extract GT as an allele-order-normalized, unphased genotype."""
         try:
             gt_idx = format_str.split(':').index('GT')
-            return value_str.split(':')[gt_idx]
+            gt = value_str.split(':')[gt_idx]
+            alleles = gt.replace('|', '/').split('/')
+            if len(alleles) != 2 or any(allele == '.' for allele in alleles):
+                return None
+            return '/'.join(sorted(alleles, key=int))
+        except (ValueError, IndexError):
+            return None
+
+    def extract_genotype_probability(
+            self, format_str: str, value_str: str, genotype: str) -> Optional[float]:
+        """Extract P(genotype) from biallelic Beagle GP values."""
+        gp_string = self.extract_format_field(format_str, value_str, "GP")
+        gp_index = {'0/0': 0, '0/1': 1, '1/1': 2}.get(genotype)
+        if gp_string is None or gp_index is None:
+            return None
+        try:
+            probabilities = [float(value) for value in gp_string.split(',')]
+            return probabilities[gp_index]
         except (ValueError, IndexError):
             return None
 
@@ -310,12 +346,9 @@ class BaseGenotypeAnalyzer:
         """Load variants from Beagle VCF file with correct field extraction."""
         beagle_variants = {}
         
-        # Skip header lines
         for line in beagle_file:
-            if not line.startswith('#'):
-                break
-                
-        for line in beagle_file:
+            if line.startswith('#'):
+                continue
             fields = line.strip().split('\t')
             # Handle chromosome format differences
             if fields[0] != chromosome:
@@ -326,11 +359,13 @@ class BaseGenotypeAnalyzer:
                 pos = int(fields[1])
                 ref, alt = fields[3], fields[4]
                 gt = self.extract_genotype(fields[8], fields[9])
+                gt_probability = self.extract_genotype_probability(
+                    fields[8], fields[9], gt)
                 baf, depth = self.extract_metrics(fields[7], fields[8], fields[9])
                 
-                # print(f"Processing Beagle variant at {chromosome}:{pos} with GT: {gt}, BAF: {baf}, Depth: {depth}")
-                if all(x is not None for x in [gt, baf, depth]):
-                    beagle_variants[pos] = (ref, alt, gt, baf, depth)
+                if all(x is not None for x in [gt, gt_probability, baf, depth]):
+                    beagle_variants[pos] = (
+                        ref, alt, gt, gt_probability, baf, depth)
                     
             except (ValueError, IndexError) as e:
                 print(f"Warning: Error processing line: {line.strip()}")
@@ -365,7 +400,8 @@ class BaseGenotypeAnalyzer:
                 continue
 
             ref, alt = fields[3], fields[4]
-            beagle_ref, beagle_alt, beagle_gt, baf, depth = beagle_variants[pos]
+            (beagle_ref, beagle_alt, beagle_gt,
+             beagle_gt_probability, baf, depth) = beagle_variants[pos]
 
             if ref != beagle_ref or alt != beagle_alt:
                 continue
@@ -379,7 +415,8 @@ class BaseGenotypeAnalyzer:
                 'header_lines': header_lines,
                 'line': line,
                 'orig_gt': orig_gt,
-                'beagle_gt': beagle_gt
+                'beagle_gt': beagle_gt,
+                'beagle_gt_probability': beagle_gt_probability,
             }
 
             # Track all transitions
@@ -468,8 +505,9 @@ class BaseGenotypeAnalyzer:
             plt.close()
 
 class ShiftedGenotypeAnalyzer(BaseGenotypeAnalyzer):
-    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", section_id: str = None):
-        super().__init__(dataset_name, quality_filter, section_id)
+    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0",
+                 section_id: str = None, section_root: str = None):
+        super().__init__(dataset_name, quality_filter, section_id, section_root)
         # Keep the same target transitions for backwards compatibility
         self.target_transitions = [
             ('0/0', '0/1'),
@@ -480,8 +518,9 @@ class ShiftedGenotypeAnalyzer(BaseGenotypeAnalyzer):
         ]
 
 class StableGenotypeAnalyzer(BaseGenotypeAnalyzer):
-    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", section_id: str = None):
-        super().__init__(dataset_name, quality_filter, section_id)
+    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0",
+                 section_id: str = None, section_root: str = None):
+        super().__init__(dataset_name, quality_filter, section_id, section_root)
         self.target_genotypes = ['0/0', '0/1', '1/1']
 
 def main():
@@ -493,6 +532,8 @@ def main():
                       help="Quality filter to use")
     parser.add_argument("--chromosomes", nargs="+", default=None,
                       help="List of chromosomes to process (e.g., chr1 chr2 chr3)")
+    parser.add_argument("--section-root", default=None,
+                      help="Override the section output root for an isolated run")
     args = parser.parse_args()
     
     # Get chromosome format from dataset config
@@ -501,15 +542,21 @@ def main():
     chromosomes = args.chromosomes if args.chromosomes else reference_config['regions']
     
     # Initialize analyzers
-    shifted_analyzer = ShiftedGenotypeAnalyzer(args.dataset, args.quality_filter, args.section_id)
-    stable_analyzer = StableGenotypeAnalyzer(args.dataset, args.quality_filter, args.section_id)
+    shifted_analyzer = ShiftedGenotypeAnalyzer(
+        args.dataset, args.quality_filter, args.section_id, args.section_root)
+    stable_analyzer = StableGenotypeAnalyzer(
+        args.dataset, args.quality_filter, args.section_id, args.section_root)
 
     for chrom in chromosomes:
         print(f"\nProcessing {chrom}...")
         
         # Process both shifted and stable genotypes
-        shifted_analyzer.analyze(chrom)
-        stable_analyzer.analyze(chrom)
+        shifted_ran = shifted_analyzer.analyze(chrom)
+        stable_ran = stable_analyzer.analyze(chrom)
+
+        if not shifted_ran and not stable_ran:
+            print(f"Skipped {chrom}: no Beagle markers for this chromosome.")
+            continue
 
         # Save intermediate results after each chromosome
         shifted_file = os.path.join(shifted_analyzer.output_dir, f'shifted_{chrom}_results.pkl')

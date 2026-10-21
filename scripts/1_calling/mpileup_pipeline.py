@@ -80,34 +80,22 @@ DATASET_CONFIGS = {
     "P4_TUMOR": {
         "base_path": "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P4_Visium",
         "bam_pattern": "spaceranger_align_rep{section_id}_hg19/P4_Tumor_output/outs/split_BAM/*.bam",
-        "barcode_file": "spaceranger_align_rep{section_id}_hg19/Meta_Data/GSM4565823_barcodes.tsv.gz",
+        "spaceranger_outs": "spaceranger_align_rep{section_id}_hg19/P4_Tumor_output/outs",
         "output_dir": "data/P4_tumor/{section_id}",
         "has_sections": True,
         "section_ids": ["1", "2"],
         "reference": "TUMOR",
         "multiple_bams": True,
-        "spatial_dir": "Meta_Data",
-        "position_file_patterns": {
-            "1": "GSM4565823_P4_rep1_tissue_positions_list.csv",
-            "2": "GSM4565824_P4_rep2_tissue_positions_list.csv"
-        },
-        "missing_tissue_file": "spaceranger_align_rep{section_id}_hg19/Meta_Data/missing_barcodes.txt"
     },
     "P6_TUMOR": {
         "base_path": "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/STmut_Data/P6_Visium",
         "bam_pattern": "spaceranger_align_rep{section_id}_hg19/P6_Tumor_output/outs/split_BAM/*.bam",
-        "barcode_file": "spaceranger_align_rep{section_id}_hg19/Meta_Data/GSM4565825_barcodes.tsv.gz",
+        "spaceranger_outs": "spaceranger_align_rep{section_id}_hg19/P6_Tumor_output/outs",
         "output_dir": "data/P6_tumor/{section_id}",
         "has_sections": True,
         "section_ids": ["1", "2"],
         "reference": "TUMOR",
         "multiple_bams": True,
-        "spatial_dir": "Meta_Data",
-        "position_file_patterns": {
-            "1": "GSM4565825_P6_rep1_tissue_positions_list.csv",
-            "2": "GSM4565826_P6_rep2_tissue_positions_list.csv"
-        },
-        "missing_tissue_file": "spaceranger_align_rep{section_id}_hg19/Meta_Data/missing_barcodes.txt"
     },
     "DCIS": {
         "base_path": "/lfs/archer.accre.vu/maiziezhou_lab/maiziezhou_lab/Datasets/ST_datasets/spatialSNV/10x-Visium",
@@ -128,7 +116,8 @@ DATASET_CONFIGS = {
         # (data/ovar_p5/{section_id}/split_BAM), so base_path points at PROJECT_DIR for the
         # BAM glob while spatial files are read from the colleague's outs via spatial_base_path.
         "base_path": "/data/maiziezhou_lab/leiy4/snv_calling",
-        "bam_pattern": "data/ovar_p5/{section_id}/split_BAM/*.bam",
+        # Rollback (July, pre-dedup): data/ovar_p5/{section_id}/split_BAM/*.bam
+        "bam_pattern": "data/ovar_p5/{section_id}/split_BAM_dedup/*.bam",
         "output_dir": "data/ovar_p5/{section_id}",
         "has_sections": True,
         "section_ids": ["P5_sr13"],
@@ -137,6 +126,21 @@ DATASET_CONFIGS = {
         "spatial_base_path": "/data/maiziezhou_lab/Pankaj/calicost_p5/spaceranger_runs",
         "spatial_dir": "outs/spatial",
         "position_file": "tissue_positions_list.csv",   # no header, standard Visium V1
+        "in_tissue_column": 1
+    },
+    "NCCE": {
+        # Japanese NCCE sections: read-only SpaceRanger outs, with split BAMs
+        # written under this project by run_slurm/ncce/0_split_bam_NCCE.sh.
+        "base_path": "/data/maiziezhou_lab/leiy4/snv_calling",
+        "bam_pattern": "data/ncce/{section_id}/split_BAM/*.bam",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "FFPE_VISIUM",  # GRCh38 with chr-prefixed contigs
+        "multiple_bams": True,
+        "spatial_base_path": "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "spatial_dir": "NCCE_{section_id}/outs/spatial",
+        "position_file": "tissue_positions.csv",
         "in_tissue_column": 1
     }
 }
@@ -503,68 +507,28 @@ def load_in_tissue_barcodes(dataset_name: str, section_id: str) -> Set[str]:
             return set()
         
     elif dataset_name in ["P4_TUMOR", "P6_TUMOR"]:
-        # Handle P4/P6 tumor datasets using the new config entries
-        if "missing_tissue_file" in dataset_config:
-            # Check if an explicit out-of-tissue barcode file exists
-            missing_barcodes_file = os.path.join(
-                dataset_config["base_path"],
-                dataset_config["missing_tissue_file"].format(section_id=section_id)
+        # Use the positions table emitted by the same hg19 Space Ranger run as
+        # the BAM. This avoids stale/missing Meta_Data copied from another build.
+        position_file = os.path.join(
+            dataset_config["base_path"],
+            dataset_config["spaceranger_outs"].format(section_id=section_id),
+            "spatial", "tissue_positions.csv"
+        )
+        try:
+            df = pd.read_csv(position_file)
+            barcode_col = "barcode" if "barcode" in df.columns else df.columns[0]
+            tissue_col = "in_tissue" if "in_tissue" in df.columns else df.columns[1]
+            in_tissue_barcodes = set(
+                df.loc[df[tissue_col].astype(int) == 1, barcode_col].astype(str)
             )
-            
-            if os.path.exists(missing_barcodes_file):
-                # Read the list of out-of-tissue barcodes
-                out_tissue_barcodes = set()
-                with open(missing_barcodes_file, 'r') as f:
-                    for line in f:
-                        parts = line.strip().split()
-                        if parts:
-                            out_tissue_barcodes.add(parts[0])  # First element is the barcode
-                
-                print(f"Loaded {len(out_tissue_barcodes)} out-of-tissue barcodes from missing_barcodes.txt")
-                
-                # Get the position file to read all barcodes
-                position_file_pattern = dataset_config["position_file_patterns"][section_id]
-                position_file = os.path.join(
-                    dataset_config["base_path"],
-                    f"spaceranger_align_rep{section_id}_hg19",
-                    dataset_config["spatial_dir"],
-                    position_file_pattern
-                )
-                
-                try:
-                    # Read all barcodes from positions file
-                    df = pd.read_csv(position_file, header=None)
-                    for _, row in df.iterrows():
-                        barcode = row[0]
-                        # Include if not in the out-of-tissue set
-                        if barcode not in out_tissue_barcodes:
-                            in_tissue_barcodes.add(barcode)
-                except Exception as e:
-                    print(f"Error loading {dataset_name} tissue positions: {str(e)}")
-                    raise
-            else:
-                print(f"Warning: Missing tissue file not found: {missing_barcodes_file}")
-                print(f"Using all spots for {dataset_name}.")
-                
-                # Fallback to using all barcodes from the barcode file
-                barcode_file = os.path.join(
-                    dataset_config["base_path"],
-                    dataset_config["barcode_file"].format(section_id=section_id)
-                )
-                if os.path.exists(barcode_file):
-                    barcodes = read_barcode_list(barcode_file)
-                    in_tissue_barcodes = set(barcodes)
-        else:
-            print(f"Warning: No missing_tissue_file configuration for {dataset_name}. Using all spots.")
-            # If no missing_tissue_file is configured, use all barcodes
-            barcode_file = os.path.join(
-                dataset_config["base_path"],
-                dataset_config["barcode_file"].format(section_id=section_id)
-            )
-            if os.path.exists(barcode_file):
-                barcodes = read_barcode_list(barcode_file)
-                in_tissue_barcodes = set(barcodes)
-    
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot load current Space Ranger tissue positions: {position_file}"
+            ) from exc
+        if not in_tissue_barcodes:
+            raise RuntimeError(f"No in-tissue barcodes found in {position_file}")
+        print(f"Loaded {len(in_tissue_barcodes)} in-tissue barcodes from {position_file}")
+
     elif dataset_name == "DCIS":
         # Handle DCIS dataset - missing_tissue_file contains the whitelist of valid barcodes
         if "missing_tissue_file" in dataset_config:
@@ -601,6 +565,26 @@ def load_in_tissue_barcodes(dataset_name: str, section_id: str) -> Set[str]:
             print(f"Loaded {len(in_tissue_barcodes)} in-tissue barcodes from {position_file}")
         except Exception as e:
             print(f"Error loading OVAR_P5 tissue positions: {str(e)}")
+            return set()  # Return empty set to use all BAMs
+
+    elif dataset_name == "NCCE":
+        # Newer SpaceRanger positions table with a header, e.g.
+        # barcode,in_tissue,array_row,array_col,pxl_row_in_fullres,pxl_col_in_fullres.
+        position_file = os.path.join(
+            dataset_config["spatial_base_path"],
+            dataset_config["spatial_dir"].format(section_id=section_id),
+            dataset_config["position_file"]
+        )
+        try:
+            df = pd.read_csv(position_file)
+            barcode_col = "barcode" if "barcode" in df.columns else df.columns[0]
+            tissue_col = "in_tissue" if "in_tissue" in df.columns else df.columns[dataset_config.get("in_tissue_column", 1)]
+            for _, row in df.iterrows():
+                if int(row[tissue_col]) == 1:
+                    in_tissue_barcodes.add(str(row[barcode_col]))
+            print(f"Loaded {len(in_tissue_barcodes)} in-tissue barcodes from {position_file}")
+        except Exception as e:
+            print(f"Error loading NCCE tissue positions: {str(e)}")
             return set()  # Return empty set to use all BAMs
 
     print(f"Loaded {len(in_tissue_barcodes)} in-tissue barcodes for {dataset_name} section {section_id}")
@@ -919,7 +903,8 @@ def process_vcfs_for_chr_prefix(output_dirs: Dict[str, str], call_mode: str,
 # 
 
 def run_pipeline(dataset_name: str, section_id: str = None, custom_params: Dict = None,
-                call_mode: str = "multi", filter_out_tissue: bool = False):
+                call_mode: str = "multi", filter_out_tissue: bool = False,
+                section_root: str = None):
     """Run the SNV calling pipeline for a specific dataset."""
     params = DEFAULT_PARAMS.copy()
     if custom_params:
@@ -944,13 +929,18 @@ def run_pipeline(dataset_name: str, section_id: str = None, custom_params: Dict 
             raise ValueError(f"Dataset {dataset_name} requires a section_id")
         bam_pattern = os.path.join(bam_base_path,
                                  dataset_config["bam_pattern"].format(section_id=section_id))
-        output_base = os.path.join(PATH_CONFIG["PROJECT_DIR"],
-                                dataset_config["output_dir"].format(section_id=section_id))
+        output_base = (
+            os.path.abspath(section_root) if section_root else
+            os.path.join(PATH_CONFIG["PROJECT_DIR"],
+                         dataset_config["output_dir"].format(section_id=section_id))
+        )
     else:
         bam_pattern = os.path.join(bam_base_path,
                                  dataset_config["bam_pattern"])
-        output_base = os.path.join(PATH_CONFIG["PROJECT_DIR"],
-                                dataset_config["output_dir"])
+        output_base = (
+            os.path.abspath(section_root) if section_root else
+            os.path.join(PATH_CONFIG["PROJECT_DIR"], dataset_config["output_dir"])
+        )
     
     # Setup directories with call mode
     output_dirs = setup_output_dirs(output_base, params, call_mode)
@@ -984,8 +974,10 @@ def run_pipeline(dataset_name: str, section_id: str = None, custom_params: Dict 
         print(f"Filtered {len(bam_files) - len(in_tissue_bam_files)} out-of-tissue BAM files")
         print(f"Processing {len(in_tissue_bam_files)} in-tissue BAM files")
         
-        # Use filtered BAM list
+        # Use filtered BAM list and fail rather than silently producing an empty run.
         bam_files = in_tissue_bam_files
+        if not bam_files:
+            raise ValueError("No split BAMs matched the in-tissue Space Ranger barcodes")
         
         # Save the list of in-tissue barcodes for reference
         in_tissue_list_file = os.path.join(output_dirs["log_dir"], "in_tissue_barcodes.txt")
@@ -1086,6 +1078,8 @@ def main():
                       help="Calling mode: process BAMs individually or together (default: multi)")
     parser.add_argument("--filter_out_tissue", action="store_true", 
                       help="Filter out spots outside of tissue boundaries")
+    parser.add_argument("--section-root", default=None,
+                      help="Override the section output root for an isolated run")
     
     args = parser.parse_args()
     
@@ -1111,7 +1105,9 @@ def main():
         with open(args.regions_file, 'r') as f:
             custom_params['REGIONS'] = [line.strip() for line in f]
     
-    metrics_df = run_pipeline(args.dataset, args.section_id, custom_params, args.call_mode, args.filter_out_tissue)
+    metrics_df = run_pipeline(
+        args.dataset, args.section_id, custom_params, args.call_mode,
+        args.filter_out_tissue, args.section_root)
     
     # Print summary information
     print("\nPipeline Summary:")

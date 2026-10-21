@@ -62,6 +62,13 @@ DATASET_CONFIGS = {
         "has_sections": True,
         "section_ids": ["P5_sr13"],
         "reference": "CHR_PREFIX"
+    },
+    "NCCE": {
+        "base_path": "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "CHR_PREFIX"
     }
 }
 
@@ -82,10 +89,15 @@ class TransitionMetrics:
 class SequenceErrorModel:
     def __init__(self, dataset_name: str, quality_filter: str, section_id: str = None, 
                  het_baf_threshold: float = None, het_depth_threshold: float = None,
-                 hom_baf_threshold: float = 0.9, hom_depth_threshold: float = None):
+                 hom_baf_threshold: float = 0.9, hom_depth_threshold: float = None,
+                 section_root: str = None, min_beagle_gp: float = 0.90):
         self.dataset_name = dataset_name
         self.section_id = section_id
         self.quality_filter = quality_filter
+        self.section_root = os.path.abspath(section_root) if section_root else None
+        self.min_beagle_gp = min_beagle_gp
+        if not 0.0 <= self.min_beagle_gp <= 1.0:
+            raise ValueError("min_beagle_gp must be between 0 and 1")
         
         # Store manual thresholds (None means calculate from data)
         self.manual_het_baf_threshold = het_baf_threshold
@@ -118,7 +130,9 @@ class SequenceErrorModel:
         """Setup necessary directories for output files"""
         dataset_config = DATASET_CONFIGS[self.dataset_name]
         
-        if dataset_config["has_sections"]:
+        if self.section_root:
+            output_base = self.section_root
+        elif dataset_config["has_sections"]:
             output_base = os.path.join(
                 self.base_dir,
                 dataset_config["output_dir"].format(section_id=self.section_id)
@@ -129,10 +143,22 @@ class SequenceErrorModel:
                 dataset_config["output_dir"]
             )
             
-        self.filtered_vcf = os.path.join(output_base, 
-                                       "output_VCFs/beagle", 
-                                       self.quality_filter, 
-                                       "all_filtered_out.vcf.gz")
+        panel_absent_vcf = os.path.join(
+            output_base, "output_VCFs/beagle", self.quality_filter,
+            "all_panel_absent.vcf.gz")
+        legacy_filtered_out = os.path.join(
+            output_base, "output_VCFs/beagle", self.quality_filter,
+            "all_filtered_out.vcf.gz")
+        # Only panel-absent calls are eligible for Beagle-derived error
+        # filtering. Panel-discordant calls bypass stages 4/5 so a disagreement
+        # cannot label and eliminate the same candidate circularly.
+        self.filtered_vcf = (
+            panel_absent_vcf if os.path.exists(panel_absent_vcf)
+            else legacy_filtered_out
+        )
+        if self.filtered_vcf == legacy_filtered_out:
+            print("WARNING: explicit all_panel_absent.vcf.gz is unavailable; "
+                  "using legacy all_filtered_out.vcf.gz")
         self.output_dir = os.path.join(output_base, 
                                      "output_VCFs/SeqErrModel", 
                                      self.quality_filter)
@@ -157,6 +183,10 @@ class SequenceErrorModel:
         hom_count = 0
         
         for transition, metrics in metrics_by_transition.items():
+            metrics = [
+                metric for metric in metrics
+                if metric.get('beagle_gt_probability', 1.0) >= self.min_beagle_gp
+            ]
             if not metrics:
                 continue
                 
@@ -207,6 +237,10 @@ class SequenceErrorModel:
         print("-" * 80)
         
         for transition, metrics in metrics_by_transition.items():
+            metrics = [
+                metric for metric in metrics
+                if metric.get('beagle_gt_probability', 1.0) >= self.min_beagle_gp
+            ]
             if not metrics:
                 continue
                 
@@ -294,7 +328,7 @@ class SequenceErrorModel:
 
     def _extract_metrics(self, info_str: str, format_str: str, value_str: str) -> Tuple[float, int]:
         """Extract BAF and depth based on dataset format"""
-        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS", "OVAR_P5"]:
+        if self.dataset_name in ["DLPFC", "10X_BC_6.5MM", "10X_BC_FFPE", "DCIS", "OVAR_P5", "NCCE"]:
             # Extract BAF from FORMAT column
             baf_str = self.extract_format_field(format_str, value_str, "BAF")
             baf = float(baf_str) if baf_str is not None else None
@@ -357,15 +391,19 @@ class SequenceErrorModel:
              gzip.open(seq_error_vcf, 'wt') as f_error, \
              gzip.open(no_seq_error_vcf, 'wt') as f_no_error:
             
-            # Copy header
+            # Copy header, keeping INFO metadata before the #CHROM line.
             for line in f_in:
-                if line.startswith('#'):
+                if not line.startswith('#'):
+                    raise ValueError("Input VCF is missing the #CHROM header")
+                if line.startswith('#CHROM'):
+                    f_error.write(
+                        '##INFO=<ID=SEQ_ERROR_MODEL,Number=1,Type=String,'
+                        'Description="Sequence error model applied (HET or HOM)">\n')
                     f_error.write(line)
                     f_no_error.write(line)
-                    if line.startswith('#CHROM'):
-                        # Add new INFO fields for model
-                        f_error.write('##INFO=<ID=SEQ_ERROR_MODEL,Number=1,Type=String,Description="Sequence error model applied (HET or HOM)">\n')
-                        break
+                    break
+                f_error.write(line)
+                f_no_error.write(line)
             
             # Process variants
             pbar = tqdm(total=total_variants, desc="Processing variants", unit="variants")
@@ -529,6 +567,10 @@ def main():
                       help="BAF threshold for homozygous variants (default: 0.99)")
     parser.add_argument("--hom_depth_threshold", type=float, default=None,
                       help="Depth threshold for homozygous variants (default: auto-calculate)")
+    parser.add_argument("--section-root", default=None,
+                      help="Override the section output root for an isolated run")
+    parser.add_argument("--min-beagle-gp", type=float, default=0.90,
+                      help="Minimum Beagle genotype posterior for weak-label calibration")
     args = parser.parse_args()
     
     model = SequenceErrorModel(
@@ -538,7 +580,9 @@ def main():
         args.het_baf_threshold,
         args.het_depth_threshold,
         args.hom_baf_threshold,
-        args.hom_depth_threshold
+        args.hom_depth_threshold,
+        args.section_root,
+        args.min_beagle_gp
     )
     model.calculate_transition_thresholds()
     model.apply_model()

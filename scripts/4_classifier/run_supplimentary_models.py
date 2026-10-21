@@ -79,6 +79,13 @@ DATASET_CONFIGS = {
         "has_sections": True,
         "section_ids": ["P5_sr13"],
         "reference": "CHR_PREFIX"
+    },
+    "NCCE": {
+        "base_path": "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "CHR_PREFIX"
     }
 }
 
@@ -188,11 +195,16 @@ class FeatureExtractor:
 
 class TrainingSetBuilder:
     def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", section_id: str = None,
-                max_training_samples: int = 90000):
+                max_training_samples: int = 90000, section_root: str = None,
+                min_beagle_gp: float = 0.90):
         self.dataset_name = dataset_name
         self.quality_filter = quality_filter
         self.section_id = section_id
         self.max_training_samples = max_training_samples
+        self.section_root = os.path.abspath(section_root) if section_root else None
+        self.min_beagle_gp = min_beagle_gp
+        if not 0.0 <= self.min_beagle_gp <= 1.0:
+            raise ValueError("min_beagle_gp must be between 0 and 1")
         self.base_dir = "/data/maiziezhou_lab/leiy4/snv_calling"
         self.validate_dataset_config()
         self.setup_paths()
@@ -226,7 +238,9 @@ class TrainingSetBuilder:
         """Setup paths for input and output files"""
         dataset_config = DATASET_CONFIGS[self.dataset_name]
         
-        if dataset_config["has_sections"]:
+        if self.section_root:
+            section_path = self.section_root
+        elif dataset_config["has_sections"]:
             section_path = os.path.join(
                 self.base_dir,
                 dataset_config["output_dir"].format(section_id=self.section_id)
@@ -294,6 +308,8 @@ class TrainingSetBuilder:
             if trans_key.startswith(key):
                 ref, alt = trans_key.split('_')[1:]
                 for metric in metrics:
+                    if metric.get('beagle_gt_probability', 1.0) < self.min_beagle_gp:
+                        continue
                     if 'line' in metric:  # Check if original VCF line is available
                         variants.append({
                             'line': metric['line'],
@@ -760,16 +776,14 @@ class TrainingSetBuilder:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
                     
-# Add a helper function for random sampling
+# Add a helper function for reproducible sampling
 def random_sample(variants: List[Dict], sample_size: int) -> List[Dict]:
-    """
-    Randomly sample a subset of variants without replacement
-    """
+    """Deterministically sample variants without replacement."""
     if len(variants) <= sample_size:
         return variants
-    
-    # Use numpy for efficient random sampling
-    indices = np.random.choice(len(variants), size=sample_size, replace=False)
+
+    indices = np.random.default_rng(42).choice(
+        len(variants), size=sample_size, replace=False)
     return [variants[i] for i in indices]
 
 
@@ -813,7 +827,8 @@ def variant_only_f1(y_true, y_pred, label_encoder=None):
         y_true[relevant_indices], 
         y_pred[relevant_indices], 
         labels=[hetero_idx, homo_idx],
-        average='macro'
+        average='macro',
+        zero_division=0
     )
 
 # Create scikit-learn compatible scorer
@@ -821,13 +836,16 @@ variant_f1_scorer = make_scorer(variant_only_f1)
 
 class ModelTrainer:
     def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", 
-                section_id: str = None, max_training_samples: int = 90000):
+                section_id: str = None, max_training_samples: int = 90000,
+                section_root: str = None, min_beagle_gp: float = 0.90):
         self.dataset_name = dataset_name
         self.quality_filter = quality_filter
         self.section_id = section_id
         self.max_training_samples = max_training_samples
         self.feature_extractor = FeatureExtractor()
-        self.builder = TrainingSetBuilder(dataset_name, quality_filter, section_id, max_training_samples)
+        self.builder = TrainingSetBuilder(
+            dataset_name, quality_filter, section_id, max_training_samples,
+            section_root, min_beagle_gp)
         self.use_pca = False
         self.pca = None
         self.model = None
@@ -843,6 +861,35 @@ class ModelTrainer:
     def build_training_sets(self):
         """Build training sets using the builder"""
         self.builder.build_training_sets()
+        return {
+            'homozygous': len(self.builder.homozygous_variants),
+            'heterozygous': len(self.builder.heterozygous_variants),
+            'no_variance': len(self.builder.novar_variants),
+        }
+
+    def write_sparse_training_fallback(self, model_type: str, training_counts: Dict[str, int]):
+        """Write explicit empty novel-call VCFs when a class cannot be trained.
+
+        Training a different binary model or borrowing another section's model
+        would silently change SPARCAL's meaning.  The conservative fallback
+        retains 1KGP-defined calls downstream while producing no untrained
+        classifier-derived (UPV/somatic) calls.  All files are under the
+        section's project-local ``data/`` tree.
+        """
+        missing = [name for name, count in training_counts.items() if count == 0]
+        for class_name in ('homozygous', 'heterozygous', 'no_variance'):
+            self.builder.save_variants(
+                [], os.path.join('results', f'{model_type}_{class_name}.vcf.gz'))
+
+        status_path = os.path.join(self.builder.model_dir, f'{model_type}_sparse_training_fallback.txt')
+        with open(status_path, 'w') as handle:
+            handle.write('SPARCAL classifier sparse-training fallback\n')
+            handle.write('No model was trained; classifier-derived novel calls are empty.\n')
+            handle.write('Missing training class(es): ' + ', '.join(missing) + '\n')
+            for name, count in training_counts.items():
+                handle.write(f'{name}_examples={count}\n')
+        print(f"Sparse training set ({training_counts}); wrote empty classifier outputs to "
+              f"{self.builder.model_dir}")
         
     def extract_and_preprocess_features(self):
         """Extract features from all three class training sets"""
@@ -1195,8 +1242,17 @@ class ModelTrainer:
         
         # Generate classification report
         y_pred = self.model.predict(X_val_transformed)
-        class_report = classification_report(y_val, y_pred, 
-                                           target_names=self.class_labels)
+        class_indices = np.arange(len(self.class_labels))
+        # A small, stratified validation split can still contain no examples of
+        # a rare class.  Pin labels to the fitted three-class vocabulary so the
+        # report remains well-defined instead of mismatching target_names.
+        class_report = classification_report(
+            y_val,
+            y_pred,
+            labels=class_indices,
+            target_names=self.class_labels,
+            zero_division=0,
+        )
         print("\nClassification Report:")
         print(class_report)
         
@@ -1206,20 +1262,20 @@ class ModelTrainer:
         homo_idx = self.label_encoder.transform(['homozygous'])[0]
         
         # Calculate class-specific metrics
-        hetero_precision = precision_score(y_val, y_pred, labels=[hetero_idx], average='macro')
-        hetero_recall = recall_score(y_val, y_pred, labels=[hetero_idx], average='macro')
-        hetero_f1 = f1_score(y_val, y_pred, labels=[hetero_idx], average='macro')
+        hetero_precision = precision_score(y_val, y_pred, labels=[hetero_idx], average='macro', zero_division=0)
+        hetero_recall = recall_score(y_val, y_pred, labels=[hetero_idx], average='macro', zero_division=0)
+        hetero_f1 = f1_score(y_val, y_pred, labels=[hetero_idx], average='macro', zero_division=0)
         
-        homo_precision = precision_score(y_val, y_pred, labels=[homo_idx], average='macro')
-        homo_recall = recall_score(y_val, y_pred, labels=[homo_idx], average='macro')
-        homo_f1 = f1_score(y_val, y_pred, labels=[homo_idx], average='macro')
+        homo_precision = precision_score(y_val, y_pred, labels=[homo_idx], average='macro', zero_division=0)
+        homo_recall = recall_score(y_val, y_pred, labels=[homo_idx], average='macro', zero_division=0)
+        homo_f1 = f1_score(y_val, y_pred, labels=[homo_idx], average='macro', zero_division=0)
         
         print("\nClass-specific metrics:")
         print(f"Heterozygous - Precision: {hetero_precision:.3f}, Recall: {hetero_recall:.3f}, F1: {hetero_f1:.3f}")
         print(f"Homozygous - Precision: {homo_precision:.3f}, Recall: {homo_recall:.3f}, F1: {homo_f1:.3f}")
         
         # Calculate and plot confusion matrix
-        conf_matrix = confusion_matrix(y_val, y_pred)
+        conf_matrix = confusion_matrix(y_val, y_pred, labels=class_indices)
         self.plot_confusion_matrix(conf_matrix, save_path=os.path.join(self.builder.model_dir, f"{model_type}_confusion_matrix.png"))
         
         # Save model, PCA, scaler, and other metadata
@@ -1578,6 +1634,10 @@ def main():
                       help="Type of model to train (default: svm)")
     parser.add_argument("--use-pca", action="store_true",
                       help="Use PCA dimensionality reduction before training")
+    parser.add_argument("--section-root", default=None,
+                      help="Override the section output root for an isolated run")
+    parser.add_argument("--min-beagle-gp", type=float, default=0.90,
+                      help="Minimum Beagle genotype posterior for weak training labels")
     
     args = parser.parse_args()
     
@@ -1599,7 +1659,9 @@ def main():
         dataset_name=args.dataset,
         quality_filter=args.quality_filter,
         section_id=args.section_id,
-        max_training_samples=args.max_training_samples
+        max_training_samples=args.max_training_samples,
+        section_root=args.section_root,
+        min_beagle_gp=args.min_beagle_gp
     )
     
     # Print configuration
@@ -1620,20 +1682,23 @@ def main():
     
     if not args.skip_training:
         # Build training sets
-        model_trainer.build_training_sets()
-        
-        # Train model
-        model_trainer.train_model(
-            model_type=args.model_type,
-            variance_threshold=args.variance_threshold,
-            use_pca=args.use_pca,
-            grid_search=args.grid_search
-        )
-        
-        # Apply model to input VCF (or to the sequence_no_error.vcf.gz file if no input specified)
-        input_vcf = args.input_vcf if args.input_vcf else model_trainer.builder.seq_no_error_vcf
-        print(f"Applying trained {args.model_type} model to: {input_vcf}")
-        model_trainer.apply_model_to_vcf(input_vcf, model_type=args.model_type, conf_threshold=args.confidence_threshold)
+        training_counts = model_trainer.build_training_sets()
+
+        if any(count == 0 for count in training_counts.values()):
+            model_trainer.write_sparse_training_fallback(args.model_type, training_counts)
+        else:
+            # Train model
+            model_trainer.train_model(
+                model_type=args.model_type,
+                variance_threshold=args.variance_threshold,
+                use_pca=args.use_pca,
+                grid_search=args.grid_search
+            )
+
+            # Apply model to input VCF (or to the sequence_no_error.vcf.gz file if no input specified)
+            input_vcf = args.input_vcf if args.input_vcf else model_trainer.builder.seq_no_error_vcf
+            print(f"Applying trained {args.model_type} model to: {input_vcf}")
+            model_trainer.apply_model_to_vcf(input_vcf, model_type=args.model_type, conf_threshold=args.confidence_threshold)
     else:
         # Load existing model
         try:

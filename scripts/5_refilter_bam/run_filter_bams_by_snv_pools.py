@@ -1,11 +1,15 @@
 import os
 import gzip
+import json
+import hashlib
+import math
+import re
 import pysam
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Set, Tuple, Optional, Dict
+from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
@@ -13,6 +17,35 @@ from tqdm import tqdm
 import glob
 import subprocess
 import tempfile
+from datetime import datetime, timezone
+
+
+SUPPORTED_BEAGLE_ROUTER_SCHEMAS = frozenset({
+    "sparcal_beagle_evidence_v2_1",
+    "sparcal_beagle_evidence_v2_2",
+})
+BEAGLE_ROUTE_VCF_NAMES = (
+    "all_beagle_nonref_highconf.vcf.gz",
+    "all_beagle_ref_highconf.vcf.gz",
+    "all_beagle_uncertain.vcf.gz",
+    "all_panel_absent.vcf.gz",
+)
+BEAGLE_COMPATIBILITY_VCF_NAMES = (
+    "all_filtered_in.vcf.gz",
+    "all_filtered_out.vcf.gz",
+    "all_panel_discordant.vcf.gz",
+)
+PANEL_PRESENT_SCHEMA = "sparcal_beagle_evidence_v2_2"
+PANEL_PRESENT_VCF_NAME = "all_panel_present.vcf.gz"
+SPOTPROFILE_SCHEMA = "sparcal_spotprofiles_v1"
+PRODUCTION_MIN_ANCHOR_PROBABILITY = 0.90
+ROUTE_TO_FILENAME = {
+    "beagle_nonref_highconf": "all_beagle_nonref_highconf.vcf.gz",
+    "beagle_ref_highconf": "all_beagle_ref_highconf.vcf.gz",
+    "beagle_uncertain": "all_beagle_uncertain.vcf.gz",
+    "panel_absent": "all_panel_absent.vcf.gz",
+}
+
 
 def save_detected_snvs(output_dir: str, result: Dict, snv_info_dict: Dict = None):
     """
@@ -47,7 +80,7 @@ def save_detected_snvs(output_dir: str, result: Dict, snv_info_dict: Dict = None
             f.write("##source=SNVMatrixGenerator_filter_bams_by_snv_pools\n")
             f.write("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">\n")
             f.write("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">\n")
-            f.write("##INFO=<ID=RACE,Number=1,Type=String,Description=\"SNV origin: defined (Beagle) or denovo (Classifier)\">\n")
+            f.write("##INFO=<ID=RACE,Number=1,Type=String,Description=\"SNV origin: defined (panel-concordant), panel_discordant, or denovo (panel-absent)\">\n")
             f.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
             f.write("##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles\">\n")
             f.write("##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Read Depth\">\n")
@@ -112,9 +145,9 @@ def save_detected_snvs(output_dir: str, result: Dict, snv_info_dict: Dict = None
         index_result = run_command(index_cmd)
         
         if not index_result:
-            print(f"Warning: Failed to index VCF for {barcode}")
-            # Still return True as the VCF was created successfully
-        
+            print(f"Error: Failed to index VCF for {barcode}")
+            return False
+
         return True
     except Exception as e:
         print(f"Error saving SNVs for {bam_name}: {str(e)}")
@@ -190,11 +223,22 @@ DATASET_CONFIGS = {
         # Per-barcode split BAMs live in OUR project (colleague outs/ is read-only),
         # so base_path is PROJECT_DIR and bam_pattern points at data/ovar_p5/.../split_BAM.
         "base_path": "/data/maiziezhou_lab/leiy4/snv_calling",
-        "bam_pattern": "data/ovar_p5/{section_id}/split_BAM/",
+        # Rollback (July, pre-dedup): data/ovar_p5/{section_id}/split_BAM/
+        "bam_pattern": "data/ovar_p5/{section_id}/split_BAM_dedup/",
         "output_dir": "data/ovar_p5/{section_id}",
         "has_sections": True,
         "section_ids": ["P5_sr13"],
         "reference": "FFPE_VISIUM",  # GRCh38 with chr prefix
+        "multiple_bams": True
+    },
+    "NCCE": {
+        # Split BAMs are generated under our project from read-only SpaceRanger outs.
+        "base_path": "/data/maiziezhou_lab/leiy4/snv_calling",
+        "bam_pattern": "data/ncce/{section_id}/split_BAM/",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "FFPE_VISIUM",
         "multiple_bams": True
     }
 }
@@ -258,50 +302,58 @@ def setup_environment():
     new_ld_path = f"{PATH_CONFIG['APPS_DIR']}:{current_ld_path}" if current_ld_path else PATH_CONFIG['APPS_DIR']
     os.environ['LD_LIBRARY_PATH'] = new_ld_path
 
-def filter_bam_one_chrom(input_bam: str, chrom: str, positions: List[int],
-                         pos_to_info: Dict[int, Tuple[str, str]] = None
-                         ) -> Tuple[List[pysam.AlignedSegment], List[int], Dict[int, List[int]]]:
+def filter_bam_one_chrom(
+    input_bam: str,
+    chrom: str,
+    alleles_by_pos: Dict[int, List[Tuple[str, str]]],
+) -> Tuple[
+    List[pysam.AlignedSegment],
+    Set[Tuple[int, str, str]],
+    Dict[Tuple[int, str, str], List[int]],
+]:
     """
-    Filter a BAM file for a single chromosome with optimized search algorithm.
+    Filter one chromosome and count every exact REF/ALT allele independently.
 
     Args:
         input_bam: Path to input BAM file
         chrom: Chromosome name to filter
-        positions: Sorted list of positions to filter for (1-based)
-        pos_to_info: Optional {pos -> (ref, alt)}. When given, per-spot allelic
-            depths (ref/alt read counts) are tallied at each covered position.
+        alleles_by_pos: ``position -> [(ref, alt), ...]`` for every exact allele
+            at that 1-based position.
 
     Returns:
-        (filtered reads, detected positions, allele_counts)
-        allele_counts: {pos -> [ref_count, alt_count]} (empty if pos_to_info None)
+        ``(filtered_reads, detected_alleles, allele_counts)`` where both allele
+        collections retain ``(position, ref, alt)``. A read aligned at a shared
+        position contributes independently to every candidate allele there.
 
     Note: a read is now recorded against EVERY SNV position it covers (the old
     code `break`-ed after the leftmost covered SNV, so reads spanning multiple
     SNVs registered only the first — under-detecting in dense regions). This
-    fixes that and is required for correct per-position allele counts.
+    fixes that and is required for correct per-allele counts.
     """
+    normalized_alleles = {
+        int(pos): tuple(sorted(set(alleles)))
+        for pos, alleles in alleles_by_pos.items()
+    }
+    positions = sorted(normalized_alleles)
     filtered_reads = []
-    detected_positions = set()  # Track which positions we actually find
-    allele_counts = {}          # pos -> [ref_count, alt_count]
+    detected_alleles: Set[Tuple[int, str, str]] = set()
+    allele_counts: Dict[Tuple[int, str, str], List[int]] = {}
     start_j = 0  # Starting position in the sorted positions list
 
     try:
         with pysam.AlignmentFile(input_bam, "rb") as in_bam:
-            # Use fetch to efficiently get reads for this chromosome
             for read in in_bam.fetch(chrom):
-                # Skip unmapped reads
                 if read.is_unmapped:
                     continue
 
-                # Get read coordinates (1-based)
                 read_start = read.reference_start + 1
-                read_end = read.reference_end + 1 if read.reference_end else read_start
+                # pysam reference_end is 0-based exclusive; numerically it is
+                # the last covered coordinate in a 1-based inclusive system.
+                read_end = read.reference_end if read.reference_end is not None else read_start
 
-                # Skip positions we've already passed
                 while start_j < len(positions) and positions[start_j] < read_start:
                     start_j += 1
 
-                # Collect ALL covered SNV positions for this read
                 covered = []
                 j = start_j
                 while j < len(positions) and positions[j] <= read_end:
@@ -313,33 +365,31 @@ def filter_bam_one_chrom(input_bam: str, chrom: str, positions: List[int],
                 if not covered:
                     continue
                 filtered_reads.append(read)
-                for pos in covered:
-                    detected_positions.add(pos)
 
-                # Tally ref/alt allele depths at each covered position
-                if pos_to_info is not None and read.query_sequence is not None:
-                    seq = read.query_sequence
-                    # ref(0-based) -> query index, for this read's aligned bases
-                    refpos = read.get_reference_positions(full_length=True)
-                    ref2q = {rp: qp for qp, rp in enumerate(refpos) if rp is not None}
-                    for pos in covered:
-                        info = pos_to_info.get(pos)
-                        if info is None:
-                            continue
-                        ref, alt = info
-                        qp = ref2q.get(pos - 1)  # positions are 1-based; ref is 0-based
-                        if qp is None:
-                            continue
-                        base = seq[qp]
-                        ac = allele_counts.setdefault(pos, [0, 0])
+                if read.query_sequence is None:
+                    continue
+                seq = read.query_sequence
+                refpos = read.get_reference_positions(full_length=True)
+                ref2q = {rp: qp for qp, rp in enumerate(refpos) if rp is not None}
+                for pos in covered:
+                    qp = ref2q.get(pos - 1)
+                    if qp is None:
+                        continue
+                    base = seq[qp].upper()
+                    for ref, alt in normalized_alleles[pos]:
+                        key = (pos, ref, alt)
+                        detected_alleles.add(key)
+                        ac = allele_counts.setdefault(key, [0, 0])
                         if base == alt:
                             ac[1] += 1
                         elif base == ref:
                             ac[0] += 1
     except Exception as e:
-        print(f"Error processing chromosome {chrom} in {input_bam}: {str(e)}")
+        raise RuntimeError(
+            f"failed processing chromosome {chrom} in {input_bam}: {e}"
+        ) from e
 
-    return filtered_reads, list(detected_positions), allele_counts
+    return filtered_reads, detected_alleles, allele_counts
 
 def create_all_variants_summary(merged_output_dir: str, vcf_output_dir: str):
     """
@@ -357,7 +407,7 @@ def create_all_variants_summary(merged_output_dir: str, vcf_output_dir: str):
     barcode_count = 0
     
     # Process each barcode VCF file
-    for vcf_file in glob.glob(os.path.join(vcf_output_dir, "*.vcf.gz")):
+    for vcf_file in sorted(glob.glob(os.path.join(vcf_output_dir, "*.vcf.gz"))):
         barcode_count += 1
         try:
             with gzip.open(vcf_file, 'rt') as f:
@@ -365,11 +415,19 @@ def create_all_variants_summary(merged_output_dir: str, vcf_output_dir: str):
                     if line.startswith('#'):
                         continue
                     
-                    parts = line.strip().split('\t')
-                    if len(parts) < 5:
-                        continue
-                    
+                    parts = line.rstrip('\n').split('\t')
+                    if len(parts) != 10:
+                        raise ValueError(
+                            f"malformed single-sample VCF record with {len(parts)} fields"
+                        )
+
                     chrom, pos, id_field, ref, alt = parts[:5]
+                    try:
+                        pos_int = int(pos)
+                    except ValueError as error:
+                        raise ValueError(f"invalid POS {pos!r}") from error
+                    if pos_int <= 0 or chrom in {'', '.'} or ref in {'', '.'} or alt in {'', '.'}:
+                        raise ValueError("invalid allele fields")
                     info_field = parts[7] if len(parts) > 7 else "."
                     format_field = parts[8] if len(parts) > 8 else "GT"
                     
@@ -382,8 +440,7 @@ def create_all_variants_summary(merged_output_dir: str, vcf_output_dir: str):
                         }
                     all_variants[variant_key]['count'] += 1
         except Exception as e:
-            print(f"Warning: Failed to read {vcf_file}: {str(e)}")
-            continue
+            raise ValueError(f"Failed to read per-spot VCF {vcf_file}: {e}") from e
     
     # Write summary VCF file
     with open(summary_file, 'w') as f:
@@ -414,10 +471,12 @@ def create_all_variants_summary(merged_output_dir: str, vcf_output_dir: str):
     
     # Compress and index the summary VCF
     compress_cmd = f"{PATH_CONFIG['BGZIP']} -f {summary_file}"
-    if run_command(compress_cmd):
-        index_cmd = f"{PATH_CONFIG['BCFTOOLS']} index -t {summary_file_gz}"
-        run_command(index_cmd)
-    
+    if not run_command(compress_cmd):
+        raise RuntimeError(f"Failed to compress summary VCF: {summary_file}")
+    index_cmd = f"{PATH_CONFIG['BCFTOOLS']} index -t {summary_file_gz}"
+    if not run_command(index_cmd):
+        raise RuntimeError(f"Failed to index summary VCF: {summary_file_gz}")
+
     print(f"Created summary of all detected variants: {summary_file_gz}")
     print(f"Total unique variants: {len(all_variants)}")
     print(f"Total barcodes processed: {barcode_count}")
@@ -520,7 +579,7 @@ def filter_bam_by_positions(input_bam: str, output_bam: str, positions_by_chrom:
             # Open output file
             with pysam.AlignmentFile(temp_output, "wb", header=in_bam.header) as out_bam:
                 # Process each chromosome
-                for chrom, pos_info_list in positions_by_chrom.items():
+                for chrom, pos_info_list in sorted(positions_by_chrom.items()):
                     # Handle chromosome naming differences
                     chrom_with_prefix = f"chr{chrom}" if not chrom.startswith("chr") else chrom
                     chrom_without_prefix = chrom.replace("chr", "")
@@ -534,19 +593,18 @@ def filter_bam_by_positions(input_bam: str, output_bam: str, positions_by_chrom:
                         # Skip chromosomes not in the BAM
                         continue
                     
-                    # Extract just positions for filtering
-                    positions = [pos for pos, ref, alt in pos_info_list]
-                    pos_to_info = {pos: (ref, alt) for pos, ref, alt in pos_info_list}
-                    
-                    # Filter reads for this chromosome (+ tally per-position allele depths)
-                    filtered_reads, detected_positions, allele_counts = filter_bam_one_chrom(
-                        input_bam, bam_chrom, positions, pos_to_info)
+                    alleles_by_pos = defaultdict(list)
+                    for pos, ref, alt in pos_info_list:
+                        alleles_by_pos[pos].append((ref, alt))
 
-                    # Add detected positions to our set with correct chromosome name and ref/alt info
-                    for pos in detected_positions:
-                        ref, alt = pos_to_info[pos]
+                    # Filter reads and tally every exact allele independently.
+                    filtered_reads, detected_alleles, allele_counts = filter_bam_one_chrom(
+                        input_bam, bam_chrom, alleles_by_pos
+                    )
+
+                    for pos, ref, alt in detected_alleles:
                         detected_snvs.add((bam_chrom, pos, ref, alt))
-                        rc, ac = allele_counts.get(pos, [0, 0])
+                        rc, ac = allele_counts.get((pos, ref, alt), [0, 0])
                         all_allele_counts[(bam_chrom, pos, ref, alt)] = (rc, ac)
                     
                     # Write filtered reads
@@ -666,7 +724,10 @@ def filter_bams_parallel(input_bams: List[str], output_dir: str, snvs: Set[SNVIn
     positions_by_chrom = defaultdict(list)
     snv_info_dict = {}  # Dictionary to store SNVInfo objects for later retrieval
     
-    for snv in snvs:
+    ordered_snvs = sorted(
+        snvs, key=lambda snv: (snv.standardized_chrom, snv.pos, snv.ref, snv.alt)
+    )
+    for snv in ordered_snvs:
         # Use standardized chromosome name
         chrom = snv.standardized_chrom
         # Include ref and alt information
@@ -677,7 +738,9 @@ def filter_bams_parallel(input_bams: List[str], output_dir: str, snvs: Set[SNVIn
     
     # Sort positions for each chromosome
     for chrom in positions_by_chrom:
-        positions_by_chrom[chrom] = sorted(positions_by_chrom[chrom], key=lambda x: x[0])
+        positions_by_chrom[chrom] = sorted(
+            set(positions_by_chrom[chrom]), key=lambda item: (item[0], item[1], item[2])
+        )
         print(f"Chromosome {chrom}: {len(positions_by_chrom[chrom])} positions")
     
     print(f"Position dictionary built for {len(positions_by_chrom)} chromosomes")
@@ -700,33 +763,14 @@ def filter_bams_parallel(input_bams: List[str], output_dir: str, snvs: Set[SNVIn
     
     # Compress and index the all_variants VCF
     compress_cmd = f"{PATH_CONFIG['BGZIP']} -f {all_variants_vcf}"
-    if run_command(compress_cmd):
-        all_variants_vcf_gz = all_variants_vcf + ".gz"
-        index_cmd = f"{PATH_CONFIG['BCFTOOLS']} index -t {all_variants_vcf_gz}"
-        run_command(index_cmd)
-        print(f"Created input variants VCF: {all_variants_vcf_gz}")
-    else:
-        print(f"Warning: Failed to compress {all_variants_vcf}")
+    if not run_command(compress_cmd):
+        raise RuntimeError(f"Failed to compress input-variant VCF: {all_variants_vcf}")
+    all_variants_vcf_gz = all_variants_vcf + ".gz"
+    index_cmd = f"{PATH_CONFIG['BCFTOOLS']} index -t {all_variants_vcf_gz}"
+    if not run_command(index_cmd):
+        raise RuntimeError(f"Failed to index input-variant VCF: {all_variants_vcf_gz}")
+    print(f"Created input variants VCF: {all_variants_vcf_gz}")
 
-    
-    # Sample a small subset of BAMs for initial testing
-    if len(input_bams) > 10000:
-        print("Large number of BAMs detected. Processing a sample of 5 first...")
-        sample_bams = input_bams[:5]
-        
-        # Process sample BAMs sequentially for better debugging
-        for bam in sample_bams:
-            result = process_single_bam(bam, output_dir, positions_by_chrom)
-            print(f"Sample result for {os.path.basename(bam)}: {result['status']}")
-            print(f"  Detected SNVs: {len(result.get('detected_snvs', []))}")
-            if result.get('detected_snvs'):
-                print(f"  First few SNVs: {result['detected_snvs'][:3]}")
-                # Test saving SNVs for the first sample
-                save_success = save_detected_snvs(vcf_output_dir, result, snv_info_dict)
-                print(f"  Saved SNVs successfully: {save_success}")
-                if not save_success:
-                    print(f"  Failed to save SNVs to {vcf_output_dir}")
-    
     saved_bam_count = 0
     print(f"Starting parallel processing of {len(input_bams)} BAM files...")
     
@@ -746,11 +790,24 @@ def filter_bams_parallel(input_bams: List[str], output_dir: str, snvs: Set[SNVIn
                 result = future.result()
                 results.append(result)
                 
-                # Save detected SNVs to barcode.vcf.gz file
-                if save_detected_snvs(vcf_output_dir, result, snv_info_dict):
-                    saved_bam_count += 1
-                    if saved_bam_count % 100 == 0:
-                        print(f"Saved {saved_bam_count} BAM files with detected SNVs so far")
+                # Save detected SNVs to barcode.vcf.gz file. A completed BAM
+                # with detected variants is not successful unless its VCF and
+                # tabix index were both written.
+                if result['status'] == 'completed' and result.get('detected_snvs'):
+                    result['vcf_saved'] = save_detected_snvs(
+                        vcf_output_dir, result, snv_info_dict
+                    )
+                    if result['vcf_saved']:
+                        saved_bam_count += 1
+                        if saved_bam_count % 100 == 0:
+                            print(
+                                f"Saved {saved_bam_count} BAM files with detected SNVs so far"
+                            )
+                    else:
+                        result['status'] = 'failed'
+                        result['error'] = 'Failed to write/index per-spot VCF'
+                else:
+                    result['vcf_saved'] = None
             except KeyboardInterrupt:
                 print("KeyboardInterrupt: Stopping processing")
                 print(f"Saved {saved_bam_count} BAM files with detected SNVs")
@@ -771,12 +828,20 @@ def filter_bams_parallel(input_bams: List[str], output_dir: str, snvs: Set[SNVIn
         print(f"Percentage with SNVs: {bams_with_snvs/len(results)*100:.2f}%")
         print(f"SNV VCF files saved: {saved_bam_count}")
     
-    # Verify SNV VCF files were created
-    if saved_bam_count > 0:
-        snv_files = glob.glob(os.path.join(vcf_output_dir, "*.vcf.gz"))
-        print(f"Found {len(snv_files)} SNV VCF files in {vcf_output_dir}")
-        if len(snv_files) != saved_bam_count:
-            print("Warning: Number of SNV VCF files doesn't match saved_bam_count")
+    # Verify the fresh directory contains exactly the VCFs reported saved.
+    snv_files = sorted(glob.glob(os.path.join(vcf_output_dir, "*.vcf.gz")))
+    print(f"Found {len(snv_files)} SNV VCF files in {vcf_output_dir}")
+    if len(snv_files) != saved_bam_count:
+        raise RuntimeError(
+            "Per-spot VCF count disagrees with successful writes: "
+            f"{len(snv_files)} != {saved_bam_count}"
+        )
+    missing_indices = [path + ".tbi" for path in snv_files if not os.path.isfile(path + ".tbi")]
+    if missing_indices:
+        raise RuntimeError(
+            f"Missing tabix index for {len(missing_indices)} per-spot VCF(s); "
+            f"first={missing_indices[0]}"
+        )
     
     summary_file = create_all_variants_summary(merged_output_dir, vcf_output_dir)
     print(f"All variants summary saved to: {summary_file}")
@@ -830,13 +895,15 @@ def index_bams_in_directory(directory: str) -> List[Dict]:
 class SNVMatrixGenerator:
     def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0",
                 section_id: str = None, use_binary: bool = False,
-                min_af_threshold: float = 0.2, classifier: str = "neural_network"):
+                min_af_threshold: float = 0.2, classifier: str = "neural_network",
+                section_root: str = None):
         self.dataset_name = dataset_name
         self.quality_filter = quality_filter
         self.section_id = section_id
         self.use_binary = use_binary
         self.min_af_threshold = min_af_threshold
         self.classifier = classifier  # Store the classifier type
+        self.section_root = os.path.abspath(section_root) if section_root else None
         self.base_dir = "/data/maiziezhou_lab/leiy4/snv_calling"
         
         # Position dictionary that will be built once and reused
@@ -869,13 +936,13 @@ class SNVMatrixGenerator:
         else:
             data_path = dataset_config["output_dir"]
             
-        input_base = os.path.join(self.base_dir, data_path)
+        input_base = self.section_root or os.path.join(self.base_dir, data_path)
         
         # Input paths
-        self.beagle_vcf = os.path.join(
-            input_base, "output_VCFs/beagle",
-            self.quality_filter, "all_filtered_in.vcf.gz"
-        )
+        self.beagle_bundle_dir = os.path.join(
+            input_base, "output_VCFs/beagle", self.quality_filter)
+        self.beagle_vcf = os.path.join(self.beagle_bundle_dir, "all_filtered_in.vcf.gz")
+        self.panel_discordant_vcf = os.path.join(self.beagle_bundle_dir, "all_panel_discordant.vcf.gz")
         # self.svm_vcf = os.path.join(
         #     input_base, "output_VCFs/SVMModel",
         #     self.quality_filter, "results/high_confidence.vcf.gz"
@@ -918,13 +985,10 @@ class SNVMatrixGenerator:
             "output_VCFs/spotprofiles",
             self.quality_filter
         )
-        os.makedirs(self.filtered_bam_dir, exist_ok=True)
         
         # Create subdirectories for per-spot outputs
         self.bam_by_spot_dir = os.path.join(self.filtered_bam_dir, "bam_by_spot")
         self.vcf_by_spot_dir = os.path.join(self.filtered_bam_dir, "vcf_by_spot")
-        os.makedirs(self.bam_by_spot_dir, exist_ok=True)
-        os.makedirs(self.vcf_by_spot_dir, exist_ok=True)
         
         # Log directory
         self.log_dir = os.path.join(
@@ -932,36 +996,600 @@ class SNVMatrixGenerator:
             "logs/spotprofiles",
             self.quality_filter
         )
-        os.makedirs(self.log_dir, exist_ok=True)
+
+    @staticmethod
+    def _parse_router_header(line: str, vcf_path: Path) -> dict:
+        """Parse the versioned router meta-header without trusting field order."""
+        match = re.fullmatch(r"##SPARCAL_BEAGLE_ROUTER=<(.+)>", line.rstrip("\n"))
+        if match is None:
+            raise ValueError(f"malformed SPARCAL Beagle router header: {vcf_path}")
+        values = {}
+        for field in re.finditer(r'(\w+)=("[^"]*"|[^,>]*)', match.group(1)):
+            value = field.group(2)
+            values[field.group(1)] = value[1:-1] if value.startswith('"') else value
+        required = {"Schema", "AnchorScore", "MinAnchorProbability", "HardAnchor"}
+        missing = sorted(required - set(values))
+        if missing:
+            raise ValueError(
+                f"router header in {vcf_path} is missing: {', '.join(missing)}"
+            )
+        try:
+            values["MinAnchorProbability"] = float(values["MinAnchorProbability"])
+        except ValueError as error:
+            raise ValueError(
+                f"invalid MinAnchorProbability in router header: {vcf_path}"
+            ) from error
+        return values
+
+    @classmethod
+    def _scan_routed_vcf(
+        cls,
+        vcf_path: Path,
+        expected_schema: str,
+        allowed_routes: Set[str],
+    ) -> Tuple[Set[Tuple[str, int, str, str]], Dict[str, int]]:
+        """Read one routed VCF completely and return exact records by route."""
+        router_contract = None
+        saw_chrom_header = False
+        keys = set()
+        route_counts = defaultdict(int)
+        try:
+            with gzip.open(vcf_path, "rt") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if line.startswith("##SPARCAL_BEAGLE_ROUTER=<"):
+                        if router_contract is not None:
+                            raise ValueError(
+                                f"duplicate router header in {vcf_path}:{line_number}"
+                            )
+                        router_contract = cls._parse_router_header(line, vcf_path)
+                        continue
+                    if line.startswith("#CHROM"):
+                        fields = line.rstrip("\n").split("\t")
+                        if len(fields) != 10:
+                            raise ValueError(
+                                f"{vcf_path}:{line_number}: expected exactly one sample"
+                            )
+                        saw_chrom_header = True
+                        continue
+                    if line.startswith("#"):
+                        continue
+                    if not saw_chrom_header:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: data before #CHROM header"
+                        )
+                    fields = line.rstrip("\n").split("\t")
+                    if len(fields) != 10:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: malformed VCF record with "
+                            f"{len(fields)} fields"
+                        )
+                    try:
+                        pos = int(fields[1])
+                    except ValueError as error:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: invalid POS {fields[1]!r}"
+                        ) from error
+                    if pos <= 0 or fields[0] in {"", "."} or fields[3] in {"", "."} \
+                            or fields[4] in {"", "."}:
+                        raise ValueError(f"{vcf_path}:{line_number}: invalid exact allele")
+                    key = (fields[0], pos, fields[3], fields[4])
+                    if key in keys:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: duplicate exact allele {key}"
+                        )
+                    info = {}
+                    for item in fields[7].split(";"):
+                        if "=" in item:
+                            name, value = item.split("=", 1)
+                            info[name] = value
+                    route = info.get("BEAGLE_ROUTE")
+                    if route not in allowed_routes:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: route {route!r} not in "
+                            f"{sorted(allowed_routes)}"
+                        )
+                    if info.get("BEAGLE_EVIDENCE_SCHEMA") != expected_schema:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: evidence schema disagrees "
+                            "with manifest"
+                        )
+                    keys.add(key)
+                    route_counts[route] += 1
+        except (OSError, EOFError, UnicodeError) as error:
+            raise ValueError(f"unreadable routed VCF: {vcf_path}: {error}") from error
+        if router_contract is None:
+            raise ValueError(f"missing SPARCAL Beagle router header: {vcf_path}")
+        if not saw_chrom_header:
+            raise ValueError(f"missing #CHROM header: {vcf_path}")
+        if (
+            router_contract["Schema"] != expected_schema
+            or router_contract["AnchorScore"] != "p_nonref"
+            or not math.isclose(
+                router_contract["MinAnchorProbability"],
+                PRODUCTION_MIN_ANCHOR_PROBABILITY,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            or router_contract["HardAnchor"] != "beagle_nonref_highconf"
+        ):
+            raise ValueError(
+                f"routed VCF contract disagrees with production manifest: {vcf_path}"
+            )
+        return keys, dict(route_counts)
+
+    @classmethod
+    def _read_router_contract(cls, vcf_path: Path) -> Tuple[str, str, float]:
+        """Return schema, score and probability from a routed VCF header."""
+        try:
+            with gzip.open(vcf_path, "rt") as handle:
+                for line in handle:
+                    if line.startswith("##SPARCAL_BEAGLE_ROUTER=<"):
+                        values = cls._parse_router_header(line, vcf_path)
+                        return (
+                            values["Schema"], values["AnchorScore"],
+                            values["MinAnchorProbability"],
+                        )
+                    if line.startswith("#CHROM"):
+                        break
+        except (OSError, EOFError, UnicodeError) as error:
+            raise ValueError(f"unreadable routed VCF: {vcf_path}: {error}") from error
+        raise ValueError(f"missing SPARCAL Beagle router header: {vcf_path}")
+
+    @staticmethod
+    def _validate_router_summary(bundle: Path, manifest: dict) -> None:
+        summary_path = bundle / "beagle_evidence_summary.tsv"
+        expected_header = [
+            "schema", "route", "count", "anchor_score",
+            "min_anchor_probability", "hard_anchor",
+        ]
+        observed = {}
+        try:
+            with summary_path.open() as handle:
+                header = handle.readline().rstrip("\n").split("\t")
+                if header != expected_header:
+                    raise ValueError(f"invalid router summary header: {summary_path}")
+                for line_number, line in enumerate(handle, start=2):
+                    fields = line.rstrip("\n").split("\t")
+                    if len(fields) != len(expected_header):
+                        raise ValueError(
+                            f"{summary_path}:{line_number}: malformed summary row"
+                        )
+                    schema, route, count, score, probability, hard_anchor = fields
+                    if route in observed:
+                        raise ValueError(
+                            f"{summary_path}:{line_number}: duplicate route {route}"
+                        )
+                    try:
+                        count = int(count)
+                        probability = float(probability)
+                    except ValueError as error:
+                        raise ValueError(
+                            f"{summary_path}:{line_number}: non-numeric count/probability"
+                        ) from error
+                    if (
+                        schema != manifest["schema"]
+                        or score != "p_nonref"
+                        or not math.isclose(
+                            probability, PRODUCTION_MIN_ANCHOR_PROBABILITY,
+                            rel_tol=0.0, abs_tol=1e-12,
+                        )
+                    ):
+                        raise ValueError(
+                            f"{summary_path}:{line_number}: non-production router contract"
+                        )
+                    expected_hard = "1" if route == "beagle_nonref_highconf" else (
+                        "." if route == "total" else "0"
+                    )
+                    if hard_anchor != expected_hard:
+                        raise ValueError(
+                            f"{summary_path}:{line_number}: invalid hard-anchor flag"
+                        )
+                    observed[route] = count
+        except OSError as error:
+            raise ValueError(f"unreadable router summary: {summary_path}: {error}") from error
+        expected = {
+            route: int(manifest["counts"][route]) for route in ROUTE_TO_FILENAME
+        }
+        expected["total"] = int(manifest["counts"]["total"])
+        if observed != expected:
+            raise ValueError(
+                f"router summary counts disagree with manifest: {observed} != {expected}"
+            )
+
+    @staticmethod
+    def _validate_router_audit(bundle: Path, manifest: dict) -> None:
+        audit_path = bundle / "beagle_evidence_audit.tsv.gz"
+        expected_columns = [
+            "schema", "chrom", "pos", "ref", "alt", "raw_gt", "beagle_gt",
+            "beagle_gp", "beagle_called_gp", "beagle_p_nonref",
+            "beagle_gp_entropy", "beagle_gp_margin", "beagle_af",
+            "gt_transition", "route", "hard_anchor",
+        ]
+        route_counts = defaultdict(int)
+        try:
+            with gzip.open(audit_path, "rt") as handle:
+                header = handle.readline().rstrip("\n").split("\t")
+                if header != expected_columns:
+                    raise ValueError(f"invalid router audit header: {audit_path}")
+                for line_number, line in enumerate(handle, start=2):
+                    fields = line.rstrip("\n").split("\t")
+                    if len(fields) != len(expected_columns):
+                        raise ValueError(
+                            f"{audit_path}:{line_number}: malformed audit row"
+                        )
+                    route = fields[14]
+                    if route not in ROUTE_TO_FILENAME:
+                        raise ValueError(
+                            f"{audit_path}:{line_number}: unknown route {route!r}"
+                        )
+                    if fields[0] != manifest["schema"]:
+                        raise ValueError(
+                            f"{audit_path}:{line_number}: schema disagrees with manifest"
+                        )
+                    route_counts[route] += 1
+        except (OSError, EOFError, UnicodeError) as error:
+            raise ValueError(f"unreadable router audit: {audit_path}: {error}") from error
+        expected = {
+            route: int(manifest["counts"][route]) for route in ROUTE_TO_FILENAME
+        }
+        if dict(route_counts) != {route: count for route, count in expected.items() if count}:
+            raise ValueError(
+                f"router audit counts disagree with manifest: {dict(route_counts)} != {expected}"
+            )
+
+    def validate_beagle_route_bundle(self) -> dict:
+        """Validate every record in the production P(nonref)>=0.90 route bundle."""
+        bundle = Path(self.beagle_bundle_dir)
+        vcf_paths = [
+            bundle / name
+            for name in (*BEAGLE_ROUTE_VCF_NAMES, *BEAGLE_COMPATIBILITY_VCF_NAMES)
+        ]
+        required = [
+            *vcf_paths,
+            *(Path(str(path) + ".tbi") for path in vcf_paths),
+            bundle / "beagle_evidence_audit.tsv.gz",
+            bundle / "beagle_evidence_summary.tsv",
+            bundle / "MANIFEST.json",
+            bundle / "RUN_COMPLETE",
+        ]
+        missing = [str(path) for path in required if not path.is_file()]
+        if missing:
+            preview = ", ".join(missing[:5])
+            raise FileNotFoundError(
+                f"incomplete Beagle four-route bundle under {bundle}; missing: {preview}"
+            )
+        if (bundle / "RUN_COMPLETE").read_text().strip() != "complete":
+            raise ValueError(f"invalid Beagle RUN_COMPLETE sentinel: {bundle}")
+
+        try:
+            manifest = json.loads((bundle / "MANIFEST.json").read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid Beagle route manifest under {bundle}: {error}") from error
+        schema = manifest.get("schema")
+        if schema not in SUPPORTED_BEAGLE_ROUTER_SCHEMAS:
+            raise ValueError(f"unsupported Beagle router schema {schema!r} under {bundle}")
+        if schema == PANEL_PRESENT_SCHEMA:
+            panel_present_path = bundle / PANEL_PRESENT_VCF_NAME
+            panel_present_required = (
+                panel_present_path, Path(str(panel_present_path) + ".tbi"),
+            )
+            panel_present_missing = [
+                str(path) for path in panel_present_required if not path.is_file()
+            ]
+            if panel_present_missing:
+                raise FileNotFoundError(
+                    f"incomplete Beagle panel-present compatibility view under "
+                    f"{bundle}; missing: {', '.join(panel_present_missing)}"
+                )
+        if manifest.get("anchor_score") != "p_nonref":
+            raise ValueError(f"Beagle bundle is not P(nonref)-routed: {bundle}")
+        try:
+            min_anchor_probability = float(manifest["min_anchor_probability"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Beagle manifest has no numeric min_anchor_probability: {bundle}"
+            ) from error
+        if not math.isclose(
+            min_anchor_probability, PRODUCTION_MIN_ANCHOR_PROBABILITY,
+            rel_tol=0.0, abs_tol=1e-12,
+        ):
+            raise ValueError(
+                f"Beagle bundle threshold must be P(nonref)>=0.90, found "
+                f"{min_anchor_probability:g}: {bundle}"
+            )
+        if manifest.get("hard_anchor_route") != "beagle_nonref_highconf":
+            raise ValueError(f"unexpected Beagle hard-anchor route under {bundle}")
+        if manifest.get("production_inputs_include_wes") is not False:
+            raise ValueError(f"Beagle bundle does not declare WES-free production input: {bundle}")
+
+        counts = manifest.get("counts")
+        if not isinstance(counts, dict):
+            raise ValueError(f"Beagle manifest has no route counts: {bundle}")
+        try:
+            expected_counts = {
+                route: int(counts[route]) for route in ROUTE_TO_FILENAME
+            }
+            total = int(counts["total"])
+            raw_record_count = int(manifest["raw_record_count"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid Beagle manifest route counts: {bundle}") from error
+        if any(count < 0 for count in expected_counts.values()) or total < 0:
+            raise ValueError(f"negative Beagle manifest count under {bundle}")
+        if sum(expected_counts.values()) != total or raw_record_count != total:
+            raise ValueError(
+                "Beagle manifest route counts do not conserve raw records: "
+                f"routes={sum(expected_counts.values())}, total={total}, "
+                f"raw={raw_record_count}"
+            )
+
+        route_sets = {}
+        for route, filename in ROUTE_TO_FILENAME.items():
+            keys, observed_routes = self._scan_routed_vcf(
+                bundle / filename, schema, {route}
+            )
+            if observed_routes.get(route, 0) != expected_counts[route]:
+                raise ValueError(
+                    f"actual {route} VCF count disagrees with manifest: "
+                    f"{len(keys)} != {expected_counts[route]}"
+                )
+            route_sets[route] = keys
+        routes = list(route_sets)
+        for index, left in enumerate(routes):
+            for right in routes[index + 1:]:
+                overlap = route_sets[left] & route_sets[right]
+                if overlap:
+                    raise ValueError(
+                        f"Beagle route VCFs are not disjoint ({left}, {right}); "
+                        f"example={next(iter(overlap))}"
+                    )
+        route_union = set().union(*route_sets.values())
+        if len(route_union) != total:
+            raise ValueError(
+                f"actual Beagle route union does not conserve manifest total: "
+                f"{len(route_union)} != {total}"
+            )
+
+        compatibility_expectations = {
+            "all_filtered_in.vcf.gz": route_sets["beagle_nonref_highconf"],
+            "all_filtered_out.vcf.gz": (
+                route_sets["beagle_ref_highconf"]
+                | route_sets["beagle_uncertain"]
+                | route_sets["panel_absent"]
+            ),
+            "all_panel_discordant.vcf.gz": (
+                route_sets["beagle_ref_highconf"]
+                | route_sets["beagle_uncertain"]
+            ),
+        }
+        compatibility_routes = {
+            "all_filtered_in.vcf.gz": {"beagle_nonref_highconf"},
+            "all_filtered_out.vcf.gz": {
+                "beagle_ref_highconf", "beagle_uncertain", "panel_absent",
+            },
+            "all_panel_discordant.vcf.gz": {
+                "beagle_ref_highconf", "beagle_uncertain",
+            },
+        }
+        if schema == PANEL_PRESENT_SCHEMA:
+            panel_present_routes = {
+                "beagle_nonref_highconf",
+                "beagle_ref_highconf",
+                "beagle_uncertain",
+            }
+            compatibility_expectations[PANEL_PRESENT_VCF_NAME] = (
+                route_sets["beagle_nonref_highconf"]
+                | route_sets["beagle_ref_highconf"]
+                | route_sets["beagle_uncertain"]
+            )
+            compatibility_routes[PANEL_PRESENT_VCF_NAME] = panel_present_routes
+            declared_compatibility = manifest.get("compatibility")
+            if (
+                not isinstance(declared_compatibility, dict)
+                or PANEL_PRESENT_VCF_NAME not in declared_compatibility
+            ):
+                raise ValueError(
+                    f"Beagle v2.2 manifest does not declare {PANEL_PRESENT_VCF_NAME}: "
+                    f"{bundle}"
+                )
+        for filename, expected_keys in compatibility_expectations.items():
+            observed_keys, _ = self._scan_routed_vcf(
+                bundle / filename, schema, compatibility_routes[filename]
+            )
+            if observed_keys != expected_keys:
+                missing_keys = expected_keys - observed_keys
+                extra_keys = observed_keys - expected_keys
+                raise ValueError(
+                    f"compatibility VCF {filename} is not the declared route union; "
+                    f"missing={len(missing_keys)}, extra={len(extra_keys)}"
+                )
+
+        self._validate_router_summary(bundle, manifest)
+        self._validate_router_audit(bundle, manifest)
+        return manifest
+
+    def preflight_output_paths(self) -> None:
+        """Refuse a filtering run before any existing output can be overwritten."""
+        conflicts = [
+            path for path in (Path(self.filtered_bam_dir), Path(self.log_dir))
+            if path.exists()
+        ]
+        if conflicts:
+            raise FileExistsError(
+                "refusing to overwrite existing spot-profile output: "
+                + ", ".join(str(path) for path in conflicts)
+            )
+
+    def initialize_output_paths(self) -> None:
+        """Create new output leaves after input validation and preflight succeed."""
+        Path(self.filtered_bam_dir).mkdir(parents=True, exist_ok=False)
+        Path(self.bam_by_spot_dir).mkdir(exist_ok=False)
+        Path(self.vcf_by_spot_dir).mkdir(exist_ok=False)
+        Path(self.log_dir).mkdir(parents=True, exist_ok=False)
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def write_completion_manifest(
+        self,
+        input_bams: List[str],
+        results: List[Dict],
+        snv_count: int,
+    ) -> dict:
+        """Write the immutable Stage 5 contract, with RUN_COMPLETE last."""
+        failed = [result for result in results if result.get("status") != "completed"]
+        if failed or len(results) != len(input_bams):
+            raise RuntimeError(
+                "cannot mark spot-profile run complete: "
+                f"results={len(results)}/{len(input_bams)}, failed={len(failed)}"
+            )
+        output_bams = sorted(Path(self.bam_by_spot_dir).glob("*.bam"))
+        expected_bam_names = sorted(Path(path).name for path in input_bams)
+        if sorted(path.name for path in output_bams) != expected_bam_names:
+            raise RuntimeError("spot-profile BAM outputs do not match input BAM basenames")
+        missing_bam_indices = [
+            str(path) + ".bai" for path in output_bams
+            if not Path(str(path) + ".bai").is_file()
+        ]
+        if missing_bam_indices:
+            raise RuntimeError(
+                f"missing BAM indices; first={missing_bam_indices[0]}"
+            )
+
+        per_spot_vcfs = sorted(Path(self.vcf_by_spot_dir).glob("*.vcf.gz"))
+        expected_vcf_names = sorted(
+            Path(result["input_bam"]).stem + ".vcf.gz"
+            for result in results if result.get("detected_snvs")
+        )
+        if [path.name for path in per_spot_vcfs] != expected_vcf_names:
+            raise RuntimeError("per-spot VCF outputs do not match detected-SNV results")
+        missing_vcf_indices = [
+            str(path) + ".tbi" for path in per_spot_vcfs
+            if not Path(str(path) + ".tbi").is_file()
+        ]
+        if missing_vcf_indices:
+            raise RuntimeError(
+                f"missing per-spot VCF indices; first={missing_vcf_indices[0]}"
+            )
+        required_aggregates = [
+            Path(self.filtered_bam_dir) / "all_variants.vcf.gz",
+            Path(self.filtered_bam_dir) / "all_variants.vcf.gz.tbi",
+            Path(self.filtered_bam_dir) / "all_detected_variants_summary.vcf.gz",
+            Path(self.filtered_bam_dir) / "all_detected_variants_summary.vcf.gz.tbi",
+            Path(self.filtered_bam_dir) / "filtering_summary.txt",
+        ]
+        missing_aggregates = [str(path) for path in required_aggregates if not path.is_file()]
+        if missing_aggregates:
+            raise RuntimeError(
+                "missing required spot-profile aggregate output(s): "
+                + ", ".join(missing_aggregates)
+            )
+
+        beagle_manifest_path = Path(self.beagle_bundle_dir) / "MANIFEST.json"
+        manifest = {
+            "schema": SPOTPROFILE_SCHEMA,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "status": "complete",
+            "dataset": self.dataset_name,
+            "section_id": self.section_id,
+            "quality_filter": self.quality_filter,
+            "classifier": self.classifier,
+            "input_bam_count": len(input_bams),
+            "completed_bam_count": len(results),
+            "failed_bam_count": 0,
+            "candidate_exact_allele_count": int(snv_count),
+            "bams_with_detected_snvs": len(per_spot_vcfs),
+            "per_spot_vcf_count": len(per_spot_vcfs),
+            "per_spot_vcfs": [path.name for path in per_spot_vcfs],
+            "per_spot_vcf_indices_complete": True,
+            "output_bam_count": len(output_bams),
+            "output_bam_indices_complete": True,
+            "beagle_route_schema": self.beagle_manifest["schema"],
+            "beagle_anchor_score": self.beagle_manifest["anchor_score"],
+            "beagle_min_anchor_probability": self.beagle_manifest[
+                "min_anchor_probability"
+            ],
+            "beagle_manifest": str(beagle_manifest_path.resolve()),
+            "beagle_manifest_sha256": self._sha256_file(beagle_manifest_path),
+            "classifier_inputs": [
+                {
+                    "path": str(Path(path).resolve()),
+                    "sha256": self._sha256_file(Path(path)),
+                }
+                for path in (self.classifier_homo_vcf, self.classifier_hetero_vcf)
+            ],
+        }
+        manifest_path = Path(self.filtered_bam_dir) / "MANIFEST.json"
+        complete_path = Path(self.filtered_bam_dir) / "RUN_COMPLETE"
+        with manifest_path.open("x") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        with complete_path.open("x") as handle:
+            handle.write("complete\n")
+        return manifest
+
+    @staticmethod
+    def _normalized_genotype(vcf_line: str) -> Optional[Tuple[int, ...]]:
+        """Return a phase-insensitive called genotype, or None for no-call."""
+        fields = vcf_line.rstrip("\n").split("\t")
+        if len(fields) != 10:
+            raise ValueError(f"malformed single-sample VCF record ({len(fields)} fields)")
+        format_fields = fields[8].split(":")
+        sample_fields = fields[9].split(":")
+        if "GT" not in format_fields:
+            raise ValueError("single-sample VCF record has no GT field")
+        gt_index = format_fields.index("GT")
+        if gt_index >= len(sample_fields):
+            raise ValueError("single-sample VCF record has no GT sample value")
+        tokens = re.split(r"[/|]", sample_fields[gt_index])
+        if not tokens or any(token in {"", "."} for token in tokens):
+            return None
+        try:
+            alleles = tuple(sorted(int(token) for token in tokens))
+        except ValueError as error:
+            raise ValueError(f"invalid GT value {sample_fields[gt_index]!r}") from error
+        if any(allele < 0 for allele in alleles):
+            raise ValueError(f"invalid GT value {sample_fields[gt_index]!r}")
+        return alleles
 
     def count_genotypes(self, vcf_path: str) -> Tuple[int, int]:
-        """Count the number of 0/1 and 1/1 genotypes in a VCF file."""
-        count_0_1 = 0
-        count_1_1 = 0
-        
-        if not os.path.exists(vcf_path):
-            print(f"Warning: VCF file not found: {vcf_path}")
-            return count_0_1, count_1_1
-            
-        with gzip.open(vcf_path, 'rt') as f:
-            for line in f:
-                if line.startswith('#'):
+        """Count phase-insensitive heterozygous and hom-alt genotypes."""
+        count_het = 0
+        count_hom_alt = 0
+        saw_header = False
+        with gzip.open(vcf_path, "rt") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if line.startswith("#CHROM"):
+                    if len(line.rstrip("\n").split("\t")) != 10:
+                        raise ValueError(
+                            f"{vcf_path}:{line_number}: expected exactly one sample"
+                        )
+                    saw_header = True
                     continue
-                if self._is_valid_genotype(line):
-                    fields = line.strip().split('\t')
-                    format_fields = fields[8].split(':')
-                    sample_fields = fields[9].split(':')
-                    gt_idx = format_fields.index('GT')
-                    gt = sample_fields[gt_idx]
-                    if gt == '0/1':
-                        count_0_1 += 1
-                    elif gt == '1/1':
-                        count_1_1 += 1
-        return count_0_1, count_1_1
+                if line.startswith("#"):
+                    continue
+                try:
+                    genotype = self._normalized_genotype(line)
+                except ValueError as error:
+                    raise ValueError(f"{vcf_path}:{line_number}: {error}") from error
+                if genotype is None or not any(allele > 0 for allele in genotype):
+                    continue
+                if len(set(genotype)) > 1:
+                    count_het += 1
+                elif genotype[0] > 0:
+                    count_hom_alt += 1
+        if not saw_header:
+            raise ValueError(f"missing #CHROM header: {vcf_path}")
+        return count_het, count_hom_alt
 
     def collect_snvs(self) -> Set[SNVInfo]:
-        """Collect SNVs from both Beagle and Classifier outputs."""
+        """Collect panel anchors, panel-discordant candidates, and classifier calls."""
         beagle_snvs = set()
+        self.beagle_manifest = self.validate_beagle_route_bundle()
         classifier_snvs = set()
         combined_snvs = set()
         heterozygous_count = 0
@@ -970,17 +1598,40 @@ class SNVMatrixGenerator:
         vcf_files = {
             f"{self.classifier.upper()} Homozygous": self.classifier_homo_vcf,
             f"{self.classifier.upper()} Heterozygous": self.classifier_hetero_vcf,
-            # beagle vcf
+            # Panel-discordant calls bypass the Beagle-trained error/genotype
+            # filters and proceed directly to spatial classification.
+            "Panel-discordant candidates": self.panel_discordant_vcf,
             "Beagle": self.beagle_vcf
         }
 
+        # Stage 4 always emits both class VCFs, even when a class is empty.
+        # Therefore absence (or a missing index) is an incomplete upstream run,
+        # not an optional zero-call case. The three routed files were already
+        # validated as part of the Beagle bundle above.
+        classifier_paths = (self.classifier_homo_vcf, self.classifier_hetero_vcf)
+        missing_classifier = [
+            required
+            for path in classifier_paths
+            for required in (path, path + ".tbi")
+            if not os.path.isfile(required)
+        ]
+        if missing_classifier:
+            raise FileNotFoundError(
+                "incomplete required classifier outputs; missing: "
+                + ", ".join(missing_classifier)
+            )
+
+        authoritative_sources = {"Beagle", "Panel-discordant candidates"}
         for source, path in vcf_files.items():
-            if not os.path.exists(path):
-                print(f"Warning: {source} VCF file not found: {path}")
-                continue
                 
-            # Determine race based on source
-            race = "defined" if source == "Beagle" else "denovo"
+            # Panel-concordant Beagle anchors remain defined. Classifier
+            # candidates preserve whether they overlapped the panel but
+            # disagreed with Beagle, or were absent from the panel.
+            race = (
+                "defined" if source == "Beagle"
+                else "panel_discordant" if source == "Panel-discordant candidates"
+                else "denovo"
+            )
             
             # Count genotypes
             count_0_1, count_1_1 = self.count_genotypes(path)
@@ -996,22 +1647,65 @@ class SNVMatrixGenerator:
             
             # Collect SNVs with race information
             source_snvs = set()
+            saw_header = False
             with gzip.open(path, 'rt') as f:
-                for line in f:
+                for line_number, line in enumerate(f, start=1):
+                    if line.startswith('#CHROM'):
+                        saw_header = True
+                        continue
                     if line.startswith('#'):
                         continue
-                    if self._is_valid_genotype(line):
+                    try:
+                        genotype_is_nonref = self._is_valid_genotype(line)
+                    except ValueError as error:
+                        raise ValueError(f"{path}:{line_number}: {error}") from error
+                    # Routed records are authoritative evidence categories; their
+                    # raw FORMAT genotype was deliberately preserved for audit and
+                    # must not veto the Beagle route. Classifier records retain a
+                    # phase-insensitive non-reference GT gate.
+                    if source in authoritative_sources or genotype_is_nonref:
                         snv = SNVInfo.from_vcf_line(line)
-                        snv.race = race  # Set the race
+                        if source == "Beagle":
+                            snv.race = "defined"
+                        elif source == "Panel-discordant candidates":
+                            # This compatibility VCF is exactly the union of
+                            # Beagle ref-high-confidence and uncertain routes.
+                            snv.race = "panel_discordant"
+                        else:
+                            beagle_route = next(
+                                (field.split("=", 1)[1] for field in snv.info.split(";")
+                                 if field.startswith("BEAGLE_ROUTE=")),
+                                None,
+                            )
+                            panel_status = next(
+                                (field.split("=", 1)[1] for field in snv.info.split(";")
+                                 if field.startswith("PANEL_STATUS=")),
+                                None,
+                            )
+                            snv.race = (
+                                "panel_discordant"
+                                if (
+                                    beagle_route in {"beagle_ref_highconf", "beagle_uncertain"}
+                                    or panel_status == "panel_discordant"
+                                )
+                                else "denovo"
+                            )
                         source_snvs.add(snv)
                         combined_snvs.add(snv)
-            
+            if not saw_header:
+                raise ValueError(f"missing #CHROM header: {path}")
+
             # Print sample keys for debugging
             print(f"SNVs collected from {source}: {len(source_snvs)}")
             sample_size = min(5, len(source_snvs))
             if sample_size > 0:
                 print(f"Sample SNV keys from {source}:")
-                sample_snvs = list(source_snvs)[:sample_size]
+                sample_snvs = sorted(
+                    source_snvs,
+                    key=lambda snv: (
+                        snv.standardized_chrom, snv.pos, snv.ref, snv.alt
+                    ),
+                )[:sample_size]
                 for snv in sample_snvs:
                     print(f"  Original chrom: {snv.chrom}, Standardized: {snv.standardized_chrom}, Key: {snv.key}, Race: {snv.race}")
             
@@ -1019,7 +1713,7 @@ class SNVMatrixGenerator:
             if source == "Beagle":
                 beagle_snvs = source_snvs
             else:
-                classifier_snvs = source_snvs
+                classifier_snvs.update(source_snvs)
         
         # Print set overlap statistics for debugging
         if beagle_snvs and classifier_snvs:
@@ -1033,10 +1727,11 @@ class SNVMatrixGenerator:
         print(f"Total Homozygous SNVs count: {homozygous_count}")
         
         # Print race distribution
-        race_counts = {"defined": 0, "denovo": 0}
+        race_counts = {"defined": 0, "panel_discordant": 0, "denovo": 0}
         for snv in combined_snvs:
             race_counts[snv.race] = race_counts.get(snv.race, 0) + 1
-        print(f"Race distribution - Defined: {race_counts['defined']}, Denovo: {race_counts['denovo']}")
+        print("Race distribution - " + ", ".join(
+            f"{race}: {count}" for race, count in race_counts.items()))
         
         # Print chromosome distribution
         chrom_counts = {}
@@ -1051,22 +1746,18 @@ class SNVMatrixGenerator:
         return combined_snvs
 
     def _is_valid_genotype(self, vcf_line: str) -> bool:
-        """Check if genotype is 0/1 or 1/1."""
-        try:
-            fields = vcf_line.strip().split('\t')
-            format_fields = fields[8].split(':')
-            sample_fields = fields[9].split(':')
-            gt_idx = format_fields.index('GT')
-            gt = sample_fields[gt_idx]
-            return gt in ['0/1', '1/1']
-        except (ValueError, IndexError):
-            return False
+        """Return True for any called, phase-insensitive non-reference GT."""
+        genotype = self._normalized_genotype(vcf_line)
+        return genotype is not None and any(allele > 0 for allele in genotype)
 
     def filter_bams(self, max_workers=30):
         """Filter BAM files based on SNV positions."""
         print("Collecting SNVs from VCF files...")
+        self.preflight_output_paths()
         snvs = self.collect_snvs()
         print(f"Found {len(snvs)} SNVs to use for filtering")
+        if not snvs:
+            raise ValueError("no valid SNVs were found in the routed/classified inputs")
 
         # Get list of BAM files
         if '*' not in self.bam_dir:
@@ -1074,16 +1765,19 @@ class SNVMatrixGenerator:
         else:
             search_pattern = self.bam_dir
         
-        bam_files = glob.glob(search_pattern)
+        bam_files = sorted(glob.glob(search_pattern))
         if not bam_files:
             raise FileNotFoundError(f"No BAM files found at: {search_pattern}")
-        
+        bam_basenames = [os.path.basename(path) for path in bam_files]
+        if len(bam_basenames) != len(set(bam_basenames)):
+            raise ValueError("input BAM basenames are not unique; outputs would collide")
+
         print(f"Found {len(bam_files)} BAM files to process")
         
         # Setup environment for samtools
         setup_environment()
-        
-        # Output directories are already created in setup_paths()
+        self.initialize_output_paths()
+
         print(f"Per-spot BAM files will be saved to: {self.bam_by_spot_dir}")
         print(f"Per-spot VCF files will be saved to: {self.vcf_by_spot_dir}")
         print(f"Merged files will be saved to: {self.filtered_bam_dir}")
@@ -1106,7 +1800,11 @@ class SNVMatrixGenerator:
         completed = sum(1 for r in results if r['status'] == 'completed')
         failed = sum(1 for r in results if r['status'] == 'failed')
         with_snvs = sum(1 for r in results if r['status'] == 'completed' and r.get('detected_snvs'))
-        
+        if len(results) != len(bam_files):
+            raise RuntimeError(
+                f"BAM result count mismatch: {len(results)} != {len(bam_files)}"
+            )
+
         print("\nBAM Filtering Summary:")
         print(f"Total BAMs processed: {len(results)}")
         print(f"Successfully filtered: {completed}")
@@ -1147,7 +1845,13 @@ class SNVMatrixGenerator:
                 for result in results:
                     if result['status'] == 'failed':
                         f.write(f"  {os.path.basename(result['input_bam'])}: {result.get('error', 'Unknown error')}\n")
-        
+
+        if failed:
+            raise RuntimeError(
+                f"spot-profile filtering failed for {failed}/{len(results)} BAMs; "
+                "RUN_COMPLETE was not written"
+            )
+        self.write_completion_manifest(bam_files, results, len(snvs))
         return results
         
     def index_existing_bams(self):
@@ -1192,7 +1896,9 @@ def main():
                       help="Only index existing BAM files without filtering")
     parser.add_argument("--classifier", default="neural_network", 
                   choices=["svm", "random_forest", "xgboost", "neural_network"],
-                  help="Type of classifier to use for SNV filtering (default: neural_network)")                  
+                  help="Type of classifier to use for SNV filtering (default: neural_network)")
+    parser.add_argument("--section-root", default=None,
+                  help="Override the section output root for an isolated run")
     
     args = parser.parse_args()
     
@@ -1224,7 +1930,8 @@ def main():
         quality_filter=args.quality_filter,
         section_id=args.section_id,
         min_af_threshold=args.min_af_threshold,
-        classifier=args.classifier
+        classifier=args.classifier,
+        section_root=args.section_root
     )
     
     if args.index_only:

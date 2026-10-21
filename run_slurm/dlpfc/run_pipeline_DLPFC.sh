@@ -121,11 +121,28 @@ run_step 6 python scripts/5_refilter_bam/run_filter_bams_by_snv_pools.py \
     --max-workers 30 \
     --classifier neural_network
 
+# S6+: full-record recount. The 2026-10-09 DLPFC recounts are intentionally NOT
+# reused because JOBS.tsv documents that they were restricted to benchmark keys.
+MOLECULE_TABLE="data/dlpfc/\${SECTION_ID}/molecule_recount/\${QUALITY_FILTER}.tsv.gz"
+run_molecule_recount() {
+    if [ -s "\${MOLECULE_TABLE}" ]; then
+        echo "[reuse] S6+ molecule table: \${MOLECULE_TABLE}"
+        return 0
+    fi
+    mkdir -p "\$(dirname "\${MOLECULE_TABLE}")"
+    python scripts/presence_fix/recount_spot_alleles.py \
+        --spotprofile-dir "data/dlpfc/\${SECTION_ID}/output_VCFs/spotprofiles/\${QUALITY_FILTER}" \
+        --bam-dir "data/dlpfc/\${SECTION_ID}/bam_bycell_dedup" \
+        --out "\${MOLECULE_TABLE}" --workers 30
+}
+run_step 6+ run_molecule_recount
+
 # Stage 7: spatial filter + matrix (normal tissue — no tumor purity / CNV)
 run_step 7 python scripts/6_spatial_filter/run_spatial_snv_filter_enhanced.py \
     --dataset dlpfc \
     --section_id "\${SECTION_ID}" \
     --quality_filter "\${QUALITY_FILTER}" \
+    --molecule_table "\${MOLECULE_TABLE}" --presence_rule G1 \
     --min_expression_germline 2 \
     --min_expression_somatic 1 \
     --neighbor_distance 1.5

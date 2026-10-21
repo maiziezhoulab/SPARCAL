@@ -88,3 +88,10 @@ Monopogen_P6_rep2/
 
 # Weekly report/record working output (not repository content)
 report/
+
+# Large or non-redistributable inputs (2026-10-20)
+resources/artifact_masks/
+cosmic_amb/
+data_sidecar_phased/
+references/
+hs_err_pid*.log

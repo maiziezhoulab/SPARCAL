@@ -1,13 +1,18 @@
+import importlib.util
 import os
+import sys
 import time
 import subprocess
 import pandas as pd
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Mapping, Optional, Sequence, Tuple
 from tqdm import tqdm
 import gzip
 import argparse
+import tempfile
+import json
+from datetime import datetime, timezone
 
 # Configuration dictionaries from mpileup_pipeline.py
 REFERENCE_CONFIGS = {
@@ -63,6 +68,15 @@ DATASET_CONFIGS = {
         "has_sections": True,
         "section_ids": ["P5_sr13"],
         "reference": "DLPFC"
+    },
+    "NCCE": {
+        # GRCh38, chr-prefixed SpaceRanger BAM/VCF; DLPFC is used here only
+        # for Beagle's chr1..chr22 region list and GRCh38 1KGP panel selection.
+        "base_path": "/data/maiziezhou_lab/Weiman/ST_CNV/data/spaceranger_outs",
+        "output_dir": "data/ncce/{section_id}",
+        "has_sections": True,
+        "section_ids": ["6A", "6B", "6C", "8A", "8B", "8C", "10A", "10B", "10C", "11A", "11B", "11C", "14A", "14B", "14C"],
+        "reference": "DLPFC"
     }
 }
 
@@ -86,7 +100,14 @@ DEFAULT_PARAMS = {
     "MODEL_SCALE": 2,
     "ITERATIONS": 0,
     "IMPUTE": False,
-    "GPROBS": True
+    "GPROBS": True,
+    # None preserves Beagle's historical default. Paper ablations should pass
+    # an explicit seed so repeated runs are exactly attributable.
+    "SEED": None,
+    # Each Beagle process is configured to use the full thread and memory
+    # allocation.  Launching one process per chromosome would therefore
+    # oversubscribe a SLURM job by up to 22-fold.
+    "PARALLEL_CHROMOSOMES": 1
 }
 
 PATH_CONFIG = {
@@ -99,11 +120,50 @@ PATH_CONFIG = {
     "TABIX": "/data/maiziezhou_lab/leiy4/snv_calling/apps/tabix"
 }
 
+
+_BEAGLE_ROUTER = None
+
+
+def _load_beagle_router():
+    """Load the colocated authoritative router, including from code snapshots."""
+    global _BEAGLE_ROUTER
+    if _BEAGLE_ROUTER is not None:
+        return _BEAGLE_ROUTER
+    router_path = Path(__file__).resolve().with_name("beagle_evidence_router.py")
+    if not router_path.is_file():
+        raise FileNotFoundError(
+            f"authoritative Beagle evidence router not found beside runner: {router_path}"
+        )
+    module_name = "_sparcal_beagle_evidence_router"
+    spec = importlib.util.spec_from_file_location(module_name, router_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load Beagle evidence router: {router_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    _BEAGLE_ROUTER = module
+    return module
+
+
 class BeaglePipeline:
-    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0", section_id: str = None):
+    def __init__(self, dataset_name: str, quality_filter: str = "baseQ0mapQ0",
+                 section_id: str = None, section_root: str = None,
+                 min_anchor_gp: Optional[float] = None,
+                 anchor_score: str = "p_nonref",
+                 min_anchor_probability: float = 0.90):
         self.dataset_name = dataset_name
         self.quality_filter = quality_filter
         self.section_id = section_id
+        self.section_root = os.path.abspath(section_root) if section_root else None
+        if min_anchor_gp is not None:
+            anchor_score = "called_gp"
+            min_anchor_probability = min_anchor_gp
+        if anchor_score not in {"p_nonref", "called_gp"}:
+            raise ValueError(f"unknown anchor_score: {anchor_score}")
+        if not 0.0 <= min_anchor_probability <= 1.0:
+            raise ValueError("min_anchor_probability must be between 0 and 1")
+        self.anchor_score = anchor_score
+        self.min_anchor_probability = min_anchor_probability
         self.validate_dataset_config()
         self.setup_paths()
         self.setup_environment()
@@ -132,7 +192,9 @@ class BeaglePipeline:
         self.regions = reference_config["regions"]
         
         # Set output directory
-        if dataset_config["has_sections"]:
+        if self.section_root:
+            self.output_base = self.section_root
+        elif dataset_config["has_sections"]:
             self.output_base = os.path.join(
                 PATH_CONFIG["PROJECT_DIR"],
                 dataset_config["output_dir"].format(section_id=self.section_id)
@@ -158,6 +220,38 @@ class BeaglePipeline:
         for dir_path in self.output_dirs.values():
             os.makedirs(dir_path, exist_ok=True)
     
+    def _claim_fresh_output_tree(self, params: Dict) -> Path:
+        """Atomically claim an empty run tree before any per-contig write."""
+        monitored = [
+            Path(self.output_dirs["output_vcf_dir"]),
+            Path(self.output_dirs["log_dir"]),
+            Path(self.output_dirs["metrics_dir"]),
+        ]
+        existing = sorted(
+            path for root in monitored for path in root.rglob("*")
+            if path.is_file() or path.is_symlink()
+        )
+        if existing:
+            examples = ", ".join(str(path) for path in existing[:5])
+            raise FileExistsError(
+                f"refusing to reuse a non-empty Beagle run tree; found "
+                f"{len(existing)} artifact(s), including: {examples}"
+            )
+        marker = Path(self.output_dirs["output_vcf_dir"]) / "RUN_STARTED.json"
+        payload = {
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "dataset": self.dataset_name,
+            "section_id": self.section_id,
+            "quality_filter": self.quality_filter,
+            "anchor_score": self.anchor_score,
+            "min_anchor_probability": self.min_anchor_probability,
+            "beagle_parameters": params,
+        }
+        with marker.open("x") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        return marker
+
     def setup_environment(self):
         """Setup environment variables for the pipeline."""
         apps_dir = PATH_CONFIG['APPS_DIR']
@@ -238,6 +332,8 @@ class BeaglePipeline:
             f"gprobs={'true' if params['GPROBS'] else 'false'}",
             f"niterations={params['ITERATIONS']}"
         ]
+        if params.get("SEED") is not None:
+            cmd.append(f"seed={params['SEED']}")
         
         with open(log_file, 'w') as log:
             log.write(f"Command: {' '.join(cmd)}\n\n")
@@ -252,26 +348,107 @@ class BeaglePipeline:
         if os.path.exists(f"{beagle_output}.tbi"):
             os.remove(f"{beagle_output}.tbi")
 
+    def chromosome_has_reference_marker(self, input_vcf: str, chromosome: str) -> Tuple[bool, int]:
+        """Return whether a contig has a target marker shared with 1000 Genomes.
+
+        Beagle 4.1 exits unsuccessfully without producing a VCF if all raw calls
+        on a contig are absent from the reference panel.  That is a normal sparse
+        panel outcome.  Query only the target positions from the indexed reference
+        and require an exact CHROM/POS/REF/ALT match before launching Beagle.
+        """
+        target_variants = set()
+        normalized_chromosome = chromosome.removeprefix('chr')
+        with gzip.open(input_vcf, 'rt') as handle:
+            for line in handle:
+                if line.startswith('#'):
+                    continue
+                fields = line.rstrip('\n').split('\t')
+                if fields[0].removeprefix('chr') == normalized_chromosome:
+                    target_variants.add((fields[1], fields[3], fields[4]))
+
+        if not target_variants:
+            return False, 0
+
+        reference_panel = self.get_1000genome_reference(chromosome)
+        region_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                prefix=f'{chromosome}_',
+                suffix='.regions',
+                dir=self.output_dirs['log_dir'],
+                delete=False,
+            ) as regions:
+                region_file = regions.name
+                for position in sorted({variant[0] for variant in target_variants}, key=int):
+                    regions.write(f'{chromosome}\t{position}\t{position}\n')
+
+            reference_records = subprocess.run(
+                ['bcftools', 'view', '-R', region_file, '-H', reference_panel],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            for line in reference_records.splitlines():
+                fields = line.split('\t')
+                if (fields[1], fields[3], fields[4]) in target_variants:
+                    return True, len(target_variants)
+            return False, len(target_variants)
+        finally:
+            if region_file and os.path.exists(region_file):
+                os.remove(region_file)
+
     def process_chromosome(self, chromosome: str, params: Dict) -> Dict:
         """Process a single chromosome with Beagle."""
         start_time = time.time()
         input_vcf = os.path.join(self.output_dirs["input_vcf_dir"], "merged_sorted_gt.vcf.gz")
         output_prefix = os.path.join(self.output_dirs["output_vcf_dir"], f"{chromosome}")
         log_file = os.path.join(self.output_dirs["log_dir"], f"{chromosome}.log")
-        
+
+        has_reference_marker, raw_marker_count = self.chromosome_has_reference_marker(input_vcf, chromosome)
+        if not has_reference_marker:
+            if raw_marker_count:
+                message = (
+                    f"No target markers on {chromosome} overlap the 1000 Genomes reference "
+                    f"({raw_marker_count} raw calls); skipped Beagle.\n"
+                )
+                status = "panel_absent"
+                route_expectation = "all_raw_alleles_panel_absent"
+            else:
+                message = f"No input markers on {chromosome}; skipped Beagle.\n"
+                status = "raw_empty"
+                route_expectation = "no_raw_records"
+            with open(log_file, 'w') as log:
+                log.write(message)
+            return {
+                "chromosome": chromosome,
+                "duration": time.time() - start_time,
+                "status": status,
+                "raw_marker_count": raw_marker_count,
+                "has_reference_marker": False,
+                "beagle_required": False,
+                "route_expectation": route_expectation,
+                "output_file": None,
+                "message": message.strip(),
+            }
+
         try:
             self.run_beagle_command(input_vcf, output_prefix, chromosome, params, log_file)
             duration = time.time() - start_time
-            
+
             beagle_output = f"{output_prefix}.vcf.gz"
             if not os.path.exists(beagle_output):
                 raise FileNotFoundError(f"Expected output file not found: {beagle_output}")
-            
+
             return {
                 "chromosome": chromosome,
                 "duration": duration,
                 "status": "completed",
-                "output_file": beagle_output
+                "raw_marker_count": raw_marker_count,
+                "has_reference_marker": True,
+                "beagle_required": True,
+                "route_expectation": "beagle_evidence_required",
+                "output_file": beagle_output,
             }
             
         except Exception as e:
@@ -282,6 +459,312 @@ class BeaglePipeline:
                 "error": str(e)
             }
 
+
+    def _validate_contig_results(
+        self,
+        results: Sequence[Mapping],
+        raw_vcf: Path,
+    ) -> Tuple[List[Dict], object]:
+        """Validate one explicit, evidence-consistent result per expected contig.
+
+        A completed contig is not accepted merely because a file exists: the
+        authoritative router additionally requires data records for that exact
+        contig. ``raw_empty`` and ``panel_absent`` remain distinct audited states.
+        """
+        router = _load_beagle_router()
+        raw_keys_by_contig = {}
+
+        def observe_raw(fields, line_number):
+            raw_keys_by_contig.setdefault(fields[0], set()).add(
+                router.variant_key(fields)
+            )
+
+        raw_contract = router._scan_single_sample_vcf(raw_vcf, observe_raw)
+        expected = tuple(self.regions)
+        expected_set = set(expected)
+        unexpected_raw = sorted(set(raw_contract.data_contigs) - expected_set)
+        if unexpected_raw:
+            raise ValueError(
+                "raw VCF contains contigs outside the configured Beagle run: "
+                + ", ".join(unexpected_raw)
+            )
+
+        by_contig = {}
+        for result in results:
+            chromosome = result.get("chromosome")
+            if chromosome not in expected_set:
+                raise ValueError(f"unexpected chromosome result: {chromosome!r}")
+            if chromosome in by_contig:
+                raise ValueError(f"duplicate chromosome result: {chromosome}")
+            by_contig[chromosome] = result
+        missing = [chromosome for chromosome in expected if chromosome not in by_contig]
+        if missing:
+            raise ValueError("missing chromosome result(s): " + ", ".join(missing))
+
+        validated = []
+        for chromosome in expected:
+            result = dict(by_contig[chromosome])
+            status = result.get("status")
+            raw_count = int(raw_contract.records_by_contig.get(chromosome, 0))
+            try:
+                reported_raw_count = int(result.get("raw_marker_count"))
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"{chromosome}: missing or invalid raw_marker_count"
+                ) from error
+            if reported_raw_count != raw_count:
+                raise ValueError(
+                    f"{chromosome}: recorded raw_marker_count={reported_raw_count} "
+                    f"does not match raw VCF count={raw_count}"
+                )
+
+            output_file = result.get("output_file")
+            if status == "completed":
+                if raw_count == 0 or result.get("has_reference_marker") is not True:
+                    raise ValueError(
+                        f"{chromosome}: completed status lacks raw/reference-panel evidence"
+                    )
+                if not output_file:
+                    raise ValueError(f"{chromosome}: completed status has no output_file")
+                output_path = Path(output_file)
+                if not output_path.is_file():
+                    raise FileNotFoundError(
+                        f"{chromosome}: completed Beagle output is missing: {output_path}"
+                    )
+                if not Path(str(output_path) + ".tbi").is_file():
+                    raise FileNotFoundError(
+                        f"{chromosome}: completed Beagle index is missing: {output_path}.tbi"
+                    )
+
+                beagle_keys = set()
+
+                def observe_beagle(fields, line_number):
+                    beagle_keys.add(router.variant_key(fields))
+
+                beagle_contract = router._scan_single_sample_vcf(
+                    output_path, observe_beagle
+                )
+                if beagle_contract.sample_id != raw_contract.sample_id:
+                    raise ValueError(
+                        f"{chromosome}: raw/Beagle sample ID mismatch: "
+                        f"raw={raw_contract.sample_id!r}, "
+                        f"Beagle={beagle_contract.sample_id!r}"
+                    )
+                data_contigs = set(beagle_contract.data_contigs)
+                if data_contigs != {chromosome}:
+                    raise ValueError(
+                        f"{chromosome}: completed Beagle output contains data for "
+                        f"{sorted(data_contigs)!r}, expected only {chromosome!r}"
+                    )
+                exact_overlap_count = len(
+                    raw_keys_by_contig.get(chromosome, set()) & beagle_keys
+                )
+                if exact_overlap_count == 0:
+                    raise ValueError(
+                        f"{chromosome}: completed Beagle output has no exact "
+                        "raw-allele overlap"
+                    )
+                result["beagle_record_count"] = beagle_contract.record_count
+                result["exact_raw_beagle_overlap_count"] = exact_overlap_count
+                result["beagle_sample_id"] = beagle_contract.sample_id
+            elif status == "raw_empty":
+                if raw_count != 0 or result.get("has_reference_marker") is not False:
+                    raise ValueError(f"{chromosome}: invalid raw_empty status")
+                if output_file is not None:
+                    raise ValueError(f"{chromosome}: raw_empty status has an output_file")
+            elif status == "panel_absent":
+                if raw_count == 0 or result.get("has_reference_marker") is not False:
+                    raise ValueError(f"{chromosome}: invalid panel_absent status")
+                if output_file is not None:
+                    raise ValueError(f"{chromosome}: panel_absent status has an output_file")
+            else:
+                raise ValueError(f"{chromosome}: invalid chromosome status {status!r}")
+            validated.append(result)
+        return validated, raw_contract
+
+    def _write_contig_status_provenance(
+        self,
+        results: Sequence[Mapping],
+        raw_contract,
+    ) -> Path:
+        """Write the immutable per-contig execution/routing contract."""
+        path = Path(self.output_dirs["output_vcf_dir"]) / "BEAGLE_CONTIG_STATUS.json"
+        payload = {
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "dataset": self.dataset_name,
+            "section_id": self.section_id,
+            "quality_filter": self.quality_filter,
+            "production_inputs_include_wes": False,
+            "raw_sample_id": raw_contract.sample_id,
+            "raw_record_count": raw_contract.record_count,
+            "expected_contigs": list(self.regions),
+            "status_counts": {
+                status: sum(result["status"] == status for result in results)
+                for status in ("completed", "panel_absent", "raw_empty")
+            },
+            "contigs": [dict(result) for result in results],
+        }
+        with path.open("x") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        return path
+
+    def _route_without_beagle(
+        self,
+        raw_vcf: Path,
+        output_dir: Path,
+        raw_contract,
+        contig_status_path: Path,
+    ) -> Mapping[str, int]:
+        """Build an all-panel-absent route bundle without a fake Beagle VCF."""
+        router = _load_beagle_router()
+        schema = router.ROUTER_SCHEMAS[self.anchor_score]
+        route_files = {
+            route: output_dir / f"all_{route}.vcf" for route in router.ROUTES
+        }
+        route_files.update({
+            "filtered_in": output_dir / "all_filtered_in.vcf",
+            "filtered_out": output_dir / "all_filtered_out.vcf",
+            "panel_discordant": output_dir / "all_panel_discordant.vcf",
+            "panel_present": output_dir / "all_panel_present.vcf",
+        })
+        generated = [
+            output_dir / "beagle_evidence_audit.tsv.gz",
+            output_dir / "beagle_evidence_summary.tsv",
+            output_dir / "MANIFEST.json",
+            output_dir / "RUN_COMPLETE",
+        ]
+        for path in route_files.values():
+            generated.extend((
+                path,
+                Path(str(path) + ".gz"),
+                Path(str(path) + ".gz.tbi"),
+            ))
+        conflicts = [path for path in generated if path.exists()]
+        if conflicts:
+            raise FileExistsError(
+                "refusing to overwrite route outputs: "
+                + ", ".join(str(path) for path in conflicts[:5])
+            )
+
+        handles = {name: path.open("wt") for name, path in route_files.items()}
+        counts = {route: 0 for route in router.ROUTES}
+        audit_path = output_dir / "beagle_evidence_audit.tsv.gz"
+        audit_columns = (
+            "schema", "chrom", "pos", "ref", "alt", "raw_gt", "beagle_gt",
+            "beagle_gp", "beagle_called_gp", "beagle_p_nonref", "beagle_gp_entropy",
+            "beagle_gp_margin", "beagle_af", "gt_transition", "route", "hard_anchor",
+        )
+        try:
+            with gzip.open(audit_path, "wt") as audit, router.open_text(raw_vcf) as raw_handle:
+                audit.write("\t".join(audit_columns) + "\n")
+                for line_number, line in enumerate(raw_handle, start=1):
+                    if line.startswith("#"):
+                        if line.startswith("#CHROM"):
+                            for handle in handles.values():
+                                handle.writelines(router._meta_headers(
+                                    schema,
+                                    self.anchor_score,
+                                    self.min_anchor_probability,
+                                ))
+                        for handle in handles.values():
+                            handle.write(line)
+                        continue
+                    fields = line.rstrip("\n").split("\t")
+                    router._validate_vcf_data_fields(fields, raw_vcf, line_number)
+                    raw_gt = router.normalize_gt(
+                        router.extract_format_value(fields[8], fields[9], "GT")
+                    )
+                    routed_line, annotations = router._annotate_line(
+                        line, "panel_absent", raw_gt, None, schema
+                    )
+                    handles["panel_absent"].write(routed_line)
+                    for compatibility in router.compatibility_outputs("panel_absent"):
+                        handles[compatibility].write(routed_line)
+                    counts["panel_absent"] += 1
+                    audit.write("\t".join((
+                        schema, fields[0], fields[1], fields[3], fields[4], raw_gt or ".",
+                        annotations["BEAGLE_GT"], annotations["BEAGLE_GP"],
+                        annotations["BEAGLE_CALLED_GP"], annotations["BEAGLE_P_NONREF"],
+                        annotations["BEAGLE_GP_ENTROPY"], annotations["BEAGLE_GP_MARGIN"],
+                        annotations["BEAGLE_AF"], annotations["BEAGLE_GT_TRANSITION"],
+                        "panel_absent", "0",
+                    )) + "\n")
+        finally:
+            for handle in handles.values():
+                handle.close()
+
+        if counts["panel_absent"] != raw_contract.record_count:
+            raise AssertionError("all-panel-absent routing did not conserve raw variants")
+        for path in route_files.values():
+            subprocess.run([PATH_CONFIG["BGZIP"], "-f", str(path)], check=True)
+            subprocess.run(
+                [PATH_CONFIG["TABIX"], "-f", "-p", "vcf", str(path) + ".gz"],
+                check=True,
+            )
+
+        with (output_dir / "beagle_evidence_summary.tsv").open("x") as handle:
+            handle.write(
+                "schema\troute\tcount\tanchor_score\tmin_anchor_probability\thard_anchor\n"
+            )
+            for route in router.ROUTES:
+                handle.write(
+                    f"{schema}\t{route}\t{counts[route]}\t{self.anchor_score}\t"
+                    f"{self.min_anchor_probability:g}\t"
+                    f"{int(route == 'beagle_nonref_highconf')}\n"
+                )
+            handle.write(
+                f"{schema}\ttotal\t{raw_contract.record_count}\t{self.anchor_score}\t"
+                f"{self.min_anchor_probability:g}\t.\n"
+            )
+
+        manifest = {
+            "schema": schema,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "production_inputs_include_wes": False,
+            "routing_mode": "all_panel_absent_no_beagle",
+            "raw_vcf": str(raw_vcf.resolve()),
+            "raw_vcf_sha256": router._sha256(raw_vcf),
+            "raw_sample_id": raw_contract.sample_id,
+            "raw_record_count": raw_contract.record_count,
+            "beagle_vcfs": [],
+            "beagle_vcf_count": 0,
+            "beagle_sample_id": None,
+            "beagle_covered_contigs": [],
+            "expected_contigs": list(self.regions),
+            "exact_overlap_count": 0,
+            "contig_status_file": str(contig_status_path.resolve()),
+            "contig_status_file_sha256": router._sha256(contig_status_path),
+            "anchor_score": self.anchor_score,
+            "min_anchor_probability": self.min_anchor_probability,
+            "hard_anchor_route": "beagle_nonref_highconf",
+            "compatibility": {
+                "all_filtered_in.vcf.gz": "beagle_nonref_highconf only",
+                "all_filtered_out.vcf.gz": "union of other three routes",
+                "all_panel_discordant.vcf.gz": (
+                    "union of beagle_ref_highconf and beagle_uncertain"
+                ),
+                "all_panel_present.vcf.gz": (
+                    "union of beagle_nonref_highconf, beagle_ref_highconf, and "
+                    "beagle_uncertain; feature-support compatibility view only, "
+                    "not a germline callset"
+                ),
+            },
+            "counts": {
+                **counts,
+                "total": raw_contract.record_count,
+                "beagle_records": 0,
+            },
+            "router_source": str(Path(router.__file__).resolve()),
+            "router_source_sha256": router._sha256(Path(router.__file__).resolve()),
+        }
+        with (output_dir / "MANIFEST.json").open("x") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        with (output_dir / "RUN_COMPLETE").open("x") as handle:
+            handle.write("complete\n")
+        return counts
+
     def run_pipeline(self, custom_params: Optional[Dict] = None) -> pd.DataFrame:
         """Run the complete Beagle pipeline."""
         params = DEFAULT_PARAMS.copy()
@@ -291,10 +774,13 @@ class BeaglePipeline:
         input_vcf = os.path.join(self.output_dirs["input_vcf_dir"], "merged_sorted_gt.vcf.gz")
         if not os.path.exists(input_vcf):
             raise FileNotFoundError(f"Input VCF not found: {input_vcf}")
+        self._claim_fresh_output_tree(params)
         
         # Process chromosomes in parallel
         results = []
-        with ThreadPoolExecutor(max_workers=min(params["THREADS"], len(self.regions))) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(params["PARALLEL_CHROMOSOMES"], len(self.regions))
+        ) as executor:
             future_to_chrom = {
                 executor.submit(
                     self.process_chromosome,
@@ -317,87 +803,92 @@ class BeaglePipeline:
                         })
                     pbar.update(1)
         
-        # Create metrics DataFrame
+        # Persist per-contig execution metrics before route validation so a
+        # fail-closed run still leaves an audit trail in its fresh output tree.
         metrics_df = pd.DataFrame(results)
-        
-        # Only proceed with filtering if all chromosomes completed successfully
-        if len(metrics_df[metrics_df['status'] == 'completed']) == len(self.regions):
-            print("\nCollecting passed variants across all chromosomes...")
-            all_passed_variants = set()
-            for _, row in metrics_df[metrics_df['status'] == 'completed'].iterrows():
-                passed_variants = self.collect_passed_variants(row['output_file'])
-                all_passed_variants.update(passed_variants)
-            print(f"Total passed variants: {len(all_passed_variants)}")
-            
-            print("Creating combined filtered and filtered out VCF...")
-            output_filtered_in = os.path.join(self.output_dirs["output_vcf_dir"], "all_filtered_in.vcf.gz")
-            output_filtered_out = os.path.join(self.output_dirs["output_vcf_dir"], "all_filtered_out.vcf.gz")
-            self.create_filtered_vcf(input_vcf, all_passed_variants, output_filtered_in, output_filtered_out)
-            # print(f"Total output_filtered
-            print(f"Combined filtered VCF created: {output_filtered_in}")
-            print(f"Combined filtered out VCF created: {output_filtered_out}")
-        
-        # Save metrics
-        metrics_file = os.path.join(self.output_dirs["metrics_dir"], 
-                                  f"{self.dataset_name}_beagle_metrics.csv")
+        metrics_file = os.path.join(
+            self.output_dirs["metrics_dir"],
+            f"{self.dataset_name}_beagle_metrics.csv",
+        )
         if self.section_id:
-            metrics_file = os.path.join(self.output_dirs["metrics_dir"],
-                                      f"{self.dataset_name}_{self.section_id}_beagle_metrics.csv")
-        metrics_df.to_csv(metrics_file, index=False)
-        
+            metrics_file = os.path.join(
+                self.output_dirs["metrics_dir"],
+                f"{self.dataset_name}_{self.section_id}_beagle_metrics.csv",
+            )
+        metrics_df.to_csv(metrics_file, index=False, mode="x")
+
+        valid_statuses = {"completed", "panel_absent", "raw_empty"}
+        failed_count = int((~metrics_df["status"].isin(valid_statuses)).sum())
+        if failed_count:
+            print(
+                f"ERROR: Beagle failed on {failed_count} chromosome(s); "
+                "combined filtered VCFs were not written."
+            )
+            raise RuntimeError(
+                f"Beagle failed on {failed_count} chromosome(s); partial outputs "
+                "were retained for audit and the run cannot be resumed in place"
+            )
+
+        validated, raw_contract = self._validate_contig_results(
+            results, Path(input_vcf)
+        )
+        contig_status_path = self._write_contig_status_provenance(
+            validated, raw_contract
+        )
+        completed = [
+            result for result in validated if result["status"] == "completed"
+        ]
+
+        print("\nRouting raw calls with the versioned Beagle evidence router...")
+        router = _load_beagle_router()
+        if completed:
+            routing_counts = router.route_vcf(
+                Path(input_vcf),
+                [Path(result["output_file"]) for result in completed],
+                Path(self.output_dirs["output_vcf_dir"]),
+                min_anchor_probability=self.min_anchor_probability,
+                anchor_score=self.anchor_score,
+                bgzip=PATH_CONFIG["BGZIP"],
+                tabix=PATH_CONFIG["TABIX"],
+                allow_existing_output_dir=True,
+                expected_contigs=self.regions,
+                contig_status_path=contig_status_path,
+            )
+            routing_mode = "beagle_with_explicit_contig_statuses"
+        else:
+            routing_counts = self._route_without_beagle(
+                Path(input_vcf),
+                Path(self.output_dirs["output_vcf_dir"]),
+                raw_contract,
+                contig_status_path,
+            )
+            routing_mode = "all_panel_absent_no_beagle"
+
+        print(
+            f"Hard-anchor VCF created with {self.anchor_score}>="
+            f"{self.min_anchor_probability:g}: "
+            f"{self.output_dirs['output_vcf_dir']}/all_filtered_in.vcf.gz"
+        )
+        print("Routing counts: " + ", ".join(
+            f"{status}={routing_counts.get(status, 0):,}"
+            for status in router.ROUTES
+        ))
+
+        complete_marker = Path(self.output_dirs["output_vcf_dir"]) / "RUN_COMPLETE.json"
+        with complete_marker.open("x") as handle:
+            json.dump({
+                "created_utc": datetime.now(timezone.utc).isoformat(),
+                "metrics_file": str(Path(metrics_file).resolve()),
+                "contig_status_file": str(contig_status_path.resolve()),
+                "routing_mode": routing_mode,
+                "expected_contigs": list(self.regions),
+                "completed_beagle_contigs": [
+                    result["chromosome"] for result in completed
+                ],
+                "production_inputs_include_wes": False,
+            }, handle, indent=2, sort_keys=True)
+            handle.write("\n")
         return metrics_df
-
-    def collect_passed_variants(self, beagle_vcf: str) -> Set[str]:
-        """Collect variants that passed Beagle processing."""
-        passed_positions = set()
-        with gzip.open(beagle_vcf, 'rt') as f:
-            for line in f:
-                if line.startswith('#'):
-                    continue
-                fields = line.strip().split('\t')
-                passed_positions.add(f"{fields[0]}_{fields[1]}_{fields[3]}_{fields[4]}")
-        return passed_positions
-
-    def create_filtered_vcf(self, input_vcf: str, passed_variants: Set[str], output_filtered_in: str, output_filtered_out: str):
-        """Create VCF files containing variants that passed/failed Beagle."""
-        # Create temporary uncompressed files
-        temp_filtered_in = output_filtered_in.replace('.gz', '')
-        temp_filtered_out = output_filtered_out.replace('.gz', '')
-        
-        # Process the VCF file
-        with gzip.open(input_vcf, 'rt') as f_in, \
-            open(temp_filtered_in, 'w') as f_filtered_in, \
-            open(temp_filtered_out, 'w') as f_filtered_out:
-            
-            # Copy header
-            for line in f_in:
-                if line.startswith('#'):
-                    f_filtered_in.write(line)
-                    f_filtered_out.write(line)
-                    if line.startswith('#CHROM'):
-                        break
-            
-            # Write variants based on whether they passed Beagle
-            for line in f_in:
-                fields = line.strip().split('\t')
-                pos_key = f"{fields[0]}_{fields[1]}_{fields[3]}_{fields[4]}"
-                
-                if pos_key in passed_variants:
-                    f_filtered_in.write(line)
-                else:
-                    f_filtered_out.write(line)
-        
-        # Compress with bgzip
-        for temp_file, output_file in [(temp_filtered_in, output_filtered_in), 
-                                    (temp_filtered_out, output_filtered_out)]:
-            subprocess.run([PATH_CONFIG['BGZIP'], '-f', temp_file], check=True)
-            
-            # Index with tabix
-            subprocess.run([PATH_CONFIG['TABIX'], '-p', 'vcf', output_file], check=True)
-            
-            # Clean up temporary files
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
 
 def main():
     parser = argparse.ArgumentParser(description="Beagle Pipeline for SNV Processing")
@@ -408,8 +899,27 @@ def main():
                       help="Number of threads to use")
     parser.add_argument("--memory", default=DEFAULT_PARAMS["MEMORY"],
                       help="Memory allocation for Beagle (e.g., '20g')")
+    parser.add_argument("--parallel-chromosomes", type=int,
+                      default=DEFAULT_PARAMS["PARALLEL_CHROMOSOMES"],
+                      help="Number of concurrent Beagle processes (default: 1)")
     parser.add_argument("--quality-filter", default="baseQ0mapQ0",
                       help="Quality filter directory (default: baseQ0mapQ0)")
+    parser.add_argument("--section-root", default=None,
+                      help="Override the section output root for an isolated run")
+    parser.add_argument("--anchor-score", choices=("p_nonref", "called_gp"),
+                      default="p_nonref",
+                      help="Evidence score for hard germline anchors (default: p_nonref)")
+    parser.add_argument("--min-anchor-probability", type=float, default=0.90,
+                      help="Minimum anchor probability (default: 0.90)")
+    parser.add_argument("--min-anchor-gp", type=float, default=None,
+                      help=("Deprecated v1 ablation alias: use called-genotype GP "
+                            "at this threshold instead of the default P(nonref)"))
+    parser.add_argument("--iterations", type=int, default=DEFAULT_PARAMS["ITERATIONS"],
+                      help="Beagle niterations value (default: 0, historical SPARCAL setting)")
+    parser.add_argument("--seed", type=int, default=DEFAULT_PARAMS["SEED"],
+                      help="Explicit Beagle random seed for reproducible ablations")
+    parser.add_argument("--impute", action="store_true", default=DEFAULT_PARAMS["IMPUTE"],
+                      help="Enable marker imputation (off by default; routing uses observed raw alleles)")
     
     args = parser.parse_args()
     
@@ -417,13 +927,21 @@ def main():
     pipeline = BeaglePipeline(
         dataset_name=args.dataset,
         quality_filter=args.quality_filter,
-        section_id=args.section_id
+        section_id=args.section_id,
+        section_root=args.section_root,
+        min_anchor_gp=args.min_anchor_gp,
+        anchor_score=args.anchor_score,
+        min_anchor_probability=args.min_anchor_probability,
     )
     
     # Set custom parameters
     custom_params = {
         "THREADS": args.threads,
-        "MEMORY": args.memory
+        "MEMORY": args.memory,
+        "PARALLEL_CHROMOSOMES": args.parallel_chromosomes,
+        "ITERATIONS": args.iterations,
+        "SEED": args.seed,
+        "IMPUTE": args.impute,
     }
     
     # Run pipeline
